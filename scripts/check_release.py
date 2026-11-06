@@ -11,6 +11,8 @@ for path in (root/'.github/workflows').glob('*.yml'):
     for line in path.read_text().splitlines():
         match=re.search(r'uses:\s*([^\s]+)',line)
         if match:
+            if match[1] == './.github/workflows/ci.yml':
+                continue  # Reusable workflow is checked out at the same release commit.
             assert re.search(r'@[a-f0-9]{40}$',match[1]), 'Unpinned action in '+str(path)
 compose=yaml.safe_load((root/'compose.yaml').read_text())
 for name,service in compose['services'].items():

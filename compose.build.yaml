@@ -1,0 +1,6 @@
+# Explicit local-source build mode. Production uses compose.yaml alone.
+services:
+  init-core:
+    build: .
+  proxy-egress-manager:
+    build: .

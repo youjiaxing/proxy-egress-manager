@@ -23,14 +23,16 @@
 
 ```sh
 # 未发布镜像时，仅本地构建项目镜像：
-docker compose build
+docker compose -f compose.yaml -f compose.build.yaml build
 # 已有镜像则先拉取；拉取失败不要先停已有运行版本：
 docker compose pull
 # 首次启动或按维护流程更新：
-docker compose up -d
+docker compose up -d --no-build --wait --wait-timeout 90
 ```
 
 本地构建未发布的项目镜像时，不要对其强行 `pull`；先单独 `docker compose pull mihomo`，再构建并启动。
+
+生产配置 `compose.yaml` 不含源码构建指令；只有显式加入 `compose.build.yaml` 才能构建。1Panel 项目名可能覆盖文件内默认值：首次部署须记录实际 Compose 项目名，后续备份、恢复和升级始终使用同一个 `-p`，否则可能访问另一套空数据卷。
 
 `init-core` 生成固定 provider、select 组和监听配置后退出，Mihomo 再启动；应用重试核心就绪，在验证前不放行。`depends_on` 只控制初次启动顺序，运行中保护由网关授权实现。
 

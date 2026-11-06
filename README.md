@@ -24,7 +24,7 @@ socks5://proxy-egress-manager:1082
 
 完整步骤：[1Panel 部署](docs/deployment.md)、[升级与恢复](docs/operations.md)、[安全与保证范围](docs/security.md)、[设计与协议](docs/architecture.md)。
 
-镜像方案：`ghcr.io/<你的账号或组织>/proxy-egress-manager:vX.Y.Z@sha256:...`。**这是发布路径约定，不是已存在的镜像。** 未发布时可在服务器 `docker compose build` 本地构建项目镜像；Mihomo 仍需获取固定上游镜像。
+镜像方案：`ghcr.io/<你的账号或组织>/proxy-egress-manager:vX.Y.Z@sha256:...`。**这是发布路径约定，不是已存在的镜像。** 未发布时可使用 `docker compose -f compose.yaml -f compose.build.yaml build` 显式本地构建；生产配置本身不构建源码，Mihomo 仍需获取固定上游镜像。
 
 复制 `.env.example` 到 `.env`，设置独有秘密、HTTPS origin、已有业务 network 和镜像引用。示例没有默认密码。不要将真实 `.env`、数据卷或备份加入 Git。
 

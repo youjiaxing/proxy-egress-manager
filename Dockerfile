@@ -8,6 +8,7 @@ COPY scheduler ./scheduler
 COPY web ./web
 COPY scripts/maintenance.py ./scripts/maintenance.py
 COPY main.py LICENSE ./
+COPY docs/third-party.md ./THIRD-PARTY.md
 USER 10001:10001
 VOLUME ["/data", "/core"]
 EXPOSE 8080 1081 1082

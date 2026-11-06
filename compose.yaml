@@ -1,7 +1,6 @@
 name: proxy-egress-manager
 x-app: &app
   image: ${PEM_IMAGE:?Set PEM_IMAGE to a version and digest, or local image}
-  build: .
   environment: &environment
     DATA_DIR: /data
     CORE_CONFIG_DIR: /core

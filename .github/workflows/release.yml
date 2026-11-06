@@ -4,35 +4,17 @@ on:
     types: [published]
 permissions:
   contents: read
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
 jobs:
   test:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Test native architecture with pinned core
-        run: |
-          set -eu
-          curl --fail --location --retry 3 "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.33/mihomo-linux-${{ matrix.arch }}-v1.19.33.gz" -o /tmp/mihomo.gz
-          gzip -dc /tmp/mihomo.gz > /tmp/mihomo
-          chmod 700 /tmp/mihomo
-          python3 -m venv .venv
-          .venv/bin/pip install -r requirements-dev.txt
-          MIHOMO_BIN=/tmp/mihomo .venv/bin/python -m pytest -q
-          .venv/bin/python scripts/check_release.py
-          node --check web/app.js
+    uses: ./.github/workflows/ci.yml
   publish:
     needs: test
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -52,21 +34,73 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Inspect version and recover an existing publication
+        id: registry
+        env:
+          REF: ${{ steps.metadata.outputs.image }}:${{ steps.metadata.outputs.version }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -eu
+          if docker buildx imagetools inspect "$REF" --format '{{json .Manifest}}' > /tmp/version-check.out 2> /tmp/version-check.err; then
+            docker buildx imagetools inspect "$REF" --format '{{json .Image}}' > /tmp/version-configs.json
+            python3 - <<'PYEXISTING'
+          import json, os, re
+          from pathlib import Path
+          manifest = json.loads(Path('/tmp/version-check.out').read_text())
+          configs = json.loads(Path('/tmp/version-configs.json').read_text())
+          digest = manifest.get('digest', '')
+          if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+              raise SystemExit('Invalid published digest')
+          for arch in ('linux/amd64', 'linux/arm64'):
+              revision = configs.get(arch, {}).get('config', {}).get('Labels', {}).get('org.opencontainers.image.revision')
+              if revision != os.environ['COMMIT']:
+                  raise SystemExit('Existing version does not match this source commit; refusing publication')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('publish=false\ndigest=' + digest + '\n')
+          PYEXISTING
+            exit 0
+          fi
+          # Only an explicit missing manifest permits a first push. Auth/network errors fail closed.
+          REF="$REF" python3 - <<'PYGUARD'
+          import os
+          from pathlib import Path
+          error = Path('/tmp/version-check.err').read_text()
+          ref = os.environ['REF']
+          if 'manifest unknown' not in error.lower() and (ref + ': not found') not in error:
+              raise SystemExit('Registry check was inconclusive; refusing publication')
+          PYGUARD
+          echo "publish=true" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         id: build
+        if: steps.registry.outputs.publish == 'true'
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.metadata.outputs.image }}:${{ steps.metadata.outputs.version }}
           labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/${{ github.sha }}/docs/third-party.md
           provenance: true
           sbom: true
-      - name: Record immutable deployment reference
+      - name: Attach deployment reference to the Release
         env:
           IMAGE: ${{ steps.metadata.outputs.image }}
           VERSION: ${{ steps.metadata.outputs.version }}
-          DIGEST: ${{ steps.build.outputs.digest }}
-        run: echo "Deploy reference $IMAGE:$VERSION@$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          DIGEST: ${{ steps.build.outputs.digest || steps.registry.outputs.digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -eu
+          printf '%s:%s@%s\ncommit=%s\n' "$IMAGE" "$VERSION" "$DIGEST" "$COMMIT" > deployment-reference.txt
+          cat deployment-reference.txt >> "$GITHUB_STEP_SUMMARY"
+          has_asset=$(gh release view "$VERSION" --json assets --jq '[.assets[].name] | index("deployment-reference.txt") != null')
+          if [ "$has_asset" = true ]; then
+            mkdir -p /tmp/existing-release-reference
+            gh release download "$VERSION" --pattern deployment-reference.txt --dir /tmp/existing-release-reference
+            cmp deployment-reference.txt /tmp/existing-release-reference/deployment-reference.txt
+          else
+            gh release upload "$VERSION" deployment-reference.txt
+          fi
