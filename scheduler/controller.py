@@ -10,7 +10,7 @@ from scheduler.probe import Observation, Prober
 from scheduler.store import new_group
 from scheduler.validation import validate_settings
 from scheduler.http import read_limited
-from scheduler.maintenance import marker_path
+from scheduler.maintenance import marker_path, begin as begin_maintenance, finish as finish_maintenance
 
 
 class Controller:
@@ -282,7 +282,7 @@ class Controller:
         self.store.save()
         await self.progress()
 
-    async def refresh_source(self, source, content=None):
+    async def refresh_source(self, source, content=None, stored_source=None):
         if content is None:
             parsed = urlparse(source["url"])
             if parsed.scheme != "https":
@@ -303,16 +303,50 @@ class Controller:
         for group in self.state["groups"]:
             if group["node"] in old and group["node"] not in nodes:
                 await self.pause(group, "订阅节点改变或消失，重验前暂停")
-        await self.core.update_source(source["slot"], payload)
         for key, node in nodes.items():
             if key in old:
                 node.update(disabled=old[key]["disabled"], priority=old[key]["priority"], last_probe=old[key]["last_probe"])
-        for key in old:
-            del self.state["nodes"][key]
-        self.state["nodes"].update(nodes)
-        source.update(refreshed_at=self.wall(), retry_at=0, error=None)
-        self.store.save()
-        self.event("source", "订阅已校验并刷新，保持未变化的在用映射")
+        previous_source = dict(stored_source) if stored_source is not None else None
+        previous_payload = None
+        if stored_source is not None:
+            previous_payload = (self.core.directory / "providers" / ("s%02d.yaml" % source["slot"])).read_text()
+            # Provider and SQLite live on separate volumes. A crash during the edit must
+            # keep the next process closed, rather than run mismatched URL/provider state.
+            begin_maintenance(self.store.directory, "订阅编辑未完整提交，需恢复一致备份")
+        try:
+            await self.core.update_source(source["slot"], payload)
+            for key in old:
+                del self.state["nodes"][key]
+            self.state["nodes"].update(nodes)
+            source.update(refreshed_at=self.wall(), retry_at=0, error=None)
+            if stored_source is not None:
+                stored_source.update(source)
+            self.store.save()  # New metadata and nodes are one SQLite commit.
+        except BaseException:
+            if stored_source is not None:
+                self.state["nodes"] = {k: v for k, v in self.state["nodes"].items() if v["source"] != source["slot"]}
+                self.state["nodes"].update(old)
+                stored_source.clear()
+                stored_source.update(previous_source)
+                try:
+                    await self.core.update_source(source["slot"], previous_payload)
+                    self.store.save()
+                    finish_maintenance(self.store.directory)
+                except BaseException:
+                    self.maintenance = True
+                    await self.pause_all("订阅编辑回退未完成，保持维护暂停")
+            raise
+        if stored_source is not None:
+            try:
+                finish_maintenance(self.store.directory)
+            except BaseException:
+                self.maintenance = True
+                await self.pause_all("订阅编辑提交标记未清除，保持维护暂停")
+                raise
+        try:
+            self.event("source", "订阅已校验并刷新，保持未变化的在用映射")
+        except Exception:
+            pass  # The edit is already committed; an audit-write error cannot claim rollback.
 
     async def action(self, kind, data):
         async with self.lock:
@@ -352,16 +386,28 @@ class Controller:
                     if refresh:
                         # Do not replace the stored identity or credentials before validation succeeds.
                         try:
-                            await self.refresh_source(updated, content)
+                            await self.refresh_source(updated, content, stored_source=source)
                         except Exception:
+                            if self.maintenance:
+                                raise ValueError("订阅编辑未完整提交，全部分组保持维护暂停；请恢复一致备份") from None
                             raise ValueError("订阅更新失败，已保留原地址和节点；请检查 URL 或导入内容") from None
                     elif not url:
                         updated.update(retry_at=0, error=None)
-                    source.update(updated)
                     if not refresh:
-                        self.store.save()
-                        self.event("operation", "订阅信息已更新")
+                        previous = dict(source)
+                        source.update(updated)
+                        try:
+                            self.store.save()
+                        except BaseException:
+                            source.clear()
+                            source.update(previous)
+                            raise
+                        try:
+                            self.event("operation", "订阅信息已更新")
+                        except Exception:
+                            pass
                         return  # Renaming or removing the URL must not trigger provider updates/probes.
+                    return  # Refresh already committed metadata and nodes together; scheduler resumes normally.
                 elif kind == "source_refresh":
                     await self.refresh_source(source, data.get("content") or None)
                 elif kind in ("source_toggle", "source_delete"):

@@ -51,6 +51,9 @@ def controller(tmp_path):
         g["node"] = n
     gateway = Gateway("127.0.0.1", clock=lambda: now[0])
     core = FakeCore()
+    core.directory = tmp_path / 'core'
+    (core.directory / 'providers').mkdir(parents=True)
+    (core.directory / 'providers' / 's01.yaml').write_text('old provider')
     c = Controller(store, core, gateway, FakeProber(core), clock=lambda: now[0])
     c.now = now
     yield c
@@ -323,3 +326,86 @@ async def test_source_invalid_edit_does_not_partially_apply(controller, fields):
     with pytest.raises(ValueError):
         await c.action('source_update', {'slot': 1, **fields})
     assert c.state['sources'][0] == before
+
+
+@pytest.mark.asyncio
+async def test_source_edit_commits_url_and_nodes_in_same_snapshot(controller, monkeypatch):
+    import json
+    from scheduler.core import parse_subscription
+    c = controller
+    for g in c.state['groups']: g.update(node=None, paused=True)
+    content='proxies:\n- {name: replacement, type: socks5, server: 127.0.0.1, port: 12345}\n'
+    expected, _ = parse_subscription(content, 1)
+    save = c.store.save
+    snapshots=[]
+    def capture():
+        save()
+        snapshots.append(json.loads(c.store.db.execute('SELECT body FROM state WHERE id=1').fetchone()[0]))
+    monkeypatch.setattr(c.store,'save',capture)
+    await c.action('source_update',{'slot':1,'url':'https://new.example/sub','name':'replacement','content':content})
+    for state in snapshots:
+        if set(state['nodes']) == set(expected):
+            assert state['sources'][0]['url']=='https://new.example/sub'
+            assert state['sources'][0]['name']=='replacement'
+    assert len(snapshots)==1
+    assert not (c.store.directory/'maintenance.json').exists()
+
+
+@pytest.mark.asyncio
+async def test_source_edit_save_failure_rolls_back_provider_metadata_and_nodes(controller, monkeypatch):
+    c=controller
+    for g in c.state['groups']: g.update(node=None, paused=True)
+    before_source=copy.deepcopy(c.state['sources'][0]);before_nodes=copy.deepcopy(c.state['nodes'])
+    old_payload=(c.core.directory/'providers/s01.yaml').read_text()
+    save=c.store.save
+    calls=[0]
+    def fail_once():
+        calls[0]+=1
+        if calls[0]==1:raise OSError('disk full')
+        save()
+    monkeypatch.setattr(c.store,'save',fail_once)
+    content='proxies:\n- {name: replacement, type: socks5, server: 127.0.0.1, port: 12345}\n'
+    with pytest.raises(ValueError,match='已保留'):
+        await c.action('source_update',{'slot':1,'url':'https://new.example/sub','name':'replacement','content':content})
+    assert c.state['sources'][0]==before_source and c.state['nodes']==before_nodes
+    assert c.core.updates[-1]==(1,old_payload)
+    assert not c.maintenance and not (c.store.directory/'maintenance.json').exists()
+
+
+@pytest.mark.asyncio
+async def test_source_edit_process_interruption_leaves_durable_barrier(controller, monkeypatch):
+    from scheduler.controller import Controller
+    c=controller
+    for g in c.state['groups']:g.update(node=None,paused=True)
+    class ProcessExit(BaseException):pass
+    async def interrupted(*args):raise ProcessExit()
+    monkeypatch.setattr(c.core,'update_source',interrupted)
+    content='proxies:\n- {name: replacement, type: socks5, server: 127.0.0.1, port: 12345}\n'
+    with pytest.raises(ProcessExit):
+        await c.action('source_update',{'slot':1,'url':'https://new.example/sub','content':content})
+    assert (c.store.directory/'maintenance.json').exists()
+    restarted=Controller(c.store,c.core,c.gateway,c.prober)
+    assert restarted.maintenance
+    assert all(g['status']=='paused' for g in c.state['groups'])
+
+
+@pytest.mark.asyncio
+async def test_source_edit_audit_failure_does_not_report_false_rollback(controller, monkeypatch):
+    c=controller
+    for g in c.state['groups']:g.update(node=None,paused=True)
+    monkeypatch.setattr(c,'event',lambda *args: (_ for _ in ()).throw(OSError('audit failure')))
+    content='proxies:\n- {name: replacement, type: socks5, server: 127.0.0.1, port: 12345}\n'
+    await c.action('source_update',{'slot':1,'url':'https://new.example/sub','content':content})
+    assert c.state['sources'][0]['url']=='https://new.example/sub'
+    assert not (c.store.directory/'maintenance.json').exists()
+
+
+@pytest.mark.asyncio
+async def test_source_rename_save_failure_keeps_old_metadata(controller, monkeypatch):
+    c=controller
+    before=copy.deepcopy(c.state['sources'][0])
+    def fail():raise OSError('disk full')
+    monkeypatch.setattr(c.store,'save',fail)
+    with pytest.raises(OSError):
+        await c.action('source_update',{'slot':1,'name':'must not remain in memory'})
+    assert c.state['sources'][0]==before
