@@ -42,8 +42,12 @@ async function until(fn){for(let i=0;i<200;i++){if(fn())return;await pause();}th
  d.getElementById('clear-operations').click();assert.equal(d.getElementById('operations').hidden,true);
  mode='error';submit();accept();await until(()=>d.getElementById('operation-list').textContent.includes('失败：订阅校验失败'));
  d.getElementById('clear-operations').click();
- mode='running';status=404;submit();accept();await until(()=>d.getElementById('operation-list').textContent.includes('任务记录已不可用'));
- assert.equal(submissions,3);
+ mode='running';
+ for(const code of [400,404]){
+  status=code;submit();accept();await until(()=>d.getElementById('operation-list').textContent.includes('任务记录已不可用'));
+  assert.equal(d.getElementById('add-source').disabled,false);d.getElementById('clear-operations').click();
+ }
+ assert.equal(submissions,4);
  d.getElementById('logout').click();await until(()=>d.getElementById('dashboard').hidden);
  assert.equal(d.getElementById('operation-list').children.length,0);
  dom.window.close();console.log('PASS: immediate feedback, persistent progress, tab navigation, transient network recovery, completion, failure, missing job, logout cleanup');

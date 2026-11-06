@@ -46,7 +46,7 @@ async function waitForJob(job, operation) {
     try { result = await api('/api/jobs/' + job); }
     catch (error) {
       if (operation.session !== operationSession) return;
-      if(error.status===404) { operation.running=false; operation.detail='任务记录已不可用，无法确认结果，请查看订阅或分组当前状态。'; renderOperations(); return; }
+      if(error.status===400 || error.status===404) { operation.running=false; operation.detail='任务记录已不可用，无法确认结果，请查看订阅或分组当前状态。'; renderOperations(); return; }
       operation.detail='暂时无法查询进度，将自动重试；这不代表操作失败，请勿重复提交。'; renderOperations();
       await new Promise(resolve=>setTimeout(resolve,4000));
       continue;
