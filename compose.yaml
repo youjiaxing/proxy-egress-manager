@@ -1,0 +1,67 @@
+name: proxy-egress-manager
+x-app: &app
+  image: ${PEM_IMAGE:?Set PEM_IMAGE to a version and digest, or local image}
+  build: .
+  environment: &environment
+    DATA_DIR: /data
+    CORE_CONFIG_DIR: /core
+    CORE_API: http://mihomo:9090
+    CORE_HOST: mihomo
+    CORE_SECRET: ${CORE_SECRET:?Generate a private core secret}
+    ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set a unique administrator password of at least 16 characters}
+    PUBLIC_URL: ${PUBLIC_URL:?Set the HTTPS management origin}
+    GROUP_CAPACITY: ${GROUP_CAPACITY:-32}
+    SOURCE_CAPACITY: ${SOURCE_CAPACITY:-16}
+  volumes:
+    - state:/data
+    - core-config:/core
+  security_opt:
+    - no-new-privileges:true
+  cap_drop: [ALL]
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+services:
+  init-core:
+    <<: *app
+    command: [init-core]
+    restart: "no"
+    networks: [backend]
+  mihomo:
+    image: metacubex/mihomo:v1.19.33@sha256:9211361a3ed85305383288d38c05e85862d6d5a590c10007c37fc059cca82e9c
+    user: "10001:10001"
+    command: [-d, /core]
+    volumes:
+      - core-config:/core
+    depends_on:
+      init-core:
+        condition: service_completed_successfully
+    networks: [backend]
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+  proxy-egress-manager:
+    <<: *app
+    depends_on:
+      init-core:
+        condition: service_completed_successfully
+      mihomo:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${WEB_HOST_PORT:-18080}:8080"
+    networks:
+      backend: {}
+      business:
+        aliases: [proxy-egress-manager]
+    restart: unless-stopped
+    stop_grace_period: 30s
+networks:
+  backend: {}
+  business:
+    external: true
+    name: ${BUSINESS_NETWORK:?Set the existing shared Docker network}
+volumes:
+  state: {}
+  core-config: {}

@@ -1,0 +1,7 @@
+# Format example only. This fictional node will NOT pass verification.
+proxies:
+  - name: 美国 · 示例节点
+    type: socks5
+    server: socks.example.invalid
+    port: 1080
+    udp: true

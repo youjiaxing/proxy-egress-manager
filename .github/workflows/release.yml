@@ -1,0 +1,72 @@
+name: Publish explicit version
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Test native architecture with pinned core
+        run: |
+          set -eu
+          curl --fail --location --retry 3 "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.33/mihomo-linux-${{ matrix.arch }}-v1.19.33.gz" -o /tmp/mihomo.gz
+          gzip -dc /tmp/mihomo.gz > /tmp/mihomo
+          chmod 700 /tmp/mihomo
+          python3 -m venv .venv
+          .venv/bin/pip install -r requirements-dev.txt
+          MIHOMO_BIN=/tmp/mihomo .venv/bin/python -m pytest -q
+          .venv/bin/python scripts/check_release.py
+          node --check web/app.js
+  publish:
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Resolve registry namespace and validate version
+        id: metadata
+        env:
+          OWNER: ${{ github.repository_owner }}
+          VERSION: ${{ github.event.release.tag_name }}
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Use a stable vX.Y.Z release tag'; exit 1; }
+          echo "image=ghcr.io/${OWNER,,}/proxy-egress-manager" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        id: build
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.image }}:${{ steps.metadata.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+          provenance: true
+          sbom: true
+      - name: Record immutable deployment reference
+        env:
+          IMAGE: ${{ steps.metadata.outputs.image }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: echo "Deploy reference $IMAGE:$VERSION@$DIGEST" >> "$GITHUB_STEP_SUMMARY"

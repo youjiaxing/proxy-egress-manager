@@ -1,0 +1,15 @@
+aiohttp==3.14.5
+aiohttp-socks==0.12.0
+PyYAML==6.0.3
+# Pin runtime transitive dependencies for repeatable release resolution.
+aiohappyeyeballs==2.6.1
+aiosignal==1.4.0
+attrs==26.1.0
+frozenlist==1.8.0
+multidict==6.9.1
+propcache==0.4.1
+python-socks==2.8.2
+typing-extensions==4.16.0
+yarl==1.25.1
+async-timeout==5.0.1; python_version < "3.11"
+idna==3.20

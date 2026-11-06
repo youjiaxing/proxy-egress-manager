@@ -1,0 +1,14 @@
+{
+  "check_interval": 30,
+  "failure_seconds": 180,
+  "health_grace": 60,
+  "identity_ttl": 180,
+  "probe_timeout": 8,
+  "tcp_check_urls": [
+    "https://www.gstatic.com/generate_204",
+    "https://cp.cloudflare.com/generate_204"
+  ],
+  "tcp_identity_urls": ["https://api.ipify.org?format=json"],
+  "stun_servers": ["stun.cloudflare.com:3478", "stun.l.google.com:19302"],
+  "country_url": "https://ipwho.is/{ip}"
+}

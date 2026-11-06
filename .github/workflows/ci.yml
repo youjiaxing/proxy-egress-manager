@@ -1,0 +1,53 @@
+name: Test and build
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Download pinned upstream test executable
+        run: |
+          set -eu
+          curl --fail --location --retry 3 "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.33/mihomo-linux-${{ matrix.arch }}-v1.19.33.gz" -o /tmp/mihomo.gz
+          gzip -dc /tmp/mihomo.gz > /tmp/mihomo
+          chmod 700 /tmp/mihomo
+      - name: Test native architecture
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -r requirements-dev.txt
+          MIHOMO_BIN=/tmp/mihomo .venv/bin/python -m pytest -q
+          .venv/bin/python scripts/check_release.py
+          node --check web/app.js
+      - name: Build and smoke-test image
+        run: |
+          docker build -t pem:ci .
+          docker run --rm --entrypoint python pem:ci -c "from gateway.server import Gateway; from web.server import Management; import platform; print(platform.machine())"
+      - name: Start actual Compose deployment
+        run: |
+          set -eu
+          export PEM_IMAGE=pem:ci PUBLIC_URL=https://pem.invalid WEB_HOST_PORT=18080
+          export CORE_SECRET="$(openssl rand -hex 32)" ADMIN_PASSWORD="$(openssl rand -hex 24)"
+          export BUSINESS_NETWORK="pem-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          project="${BUSINESS_NETWORK}"
+          cleanup() {
+            docker compose -p "$project" down -v --remove-orphans
+            docker network rm "$BUSINESS_NETWORK"
+          }
+          docker network create "$BUSINESS_NETWORK"
+          trap cleanup EXIT
+          docker compose -p "$project" up -d --no-build --wait --wait-timeout 90
+          docker compose -p "$project" exec -T proxy-egress-manager python main.py healthcheck
