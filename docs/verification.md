@@ -100,3 +100,13 @@
 - 最终原生双架构 CI https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42229655140 与发布 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42229866913 均通过。源码提交 `65cbcfd708951dc6af1b82765be5c5956b57d3c5`；镜像 `ghcr.io/youjiaxing/proxy-egress-manager:v0.1.3@sha256:15c27173b2075d83ba2a55502d9b8a9ab3908fc5e07eb810f051d9da927fc2df` 已部署、健康检查通过。
 - 升级前确认无活跃分组，分别保留旧环境、旧镜像和卷外一致状态备份，支持失败回退。升级前已有用户订阅 1 个、节点 61 个；未用真实订阅做替换试验。
 - 最终线上通过 HTTPS 登录，读取编辑详情（认证/no-store）、提交原名称与原 URL、等待保存任务成功，比较保存前后来源信息及节点定义完全一致：1 个订阅、61 个节点均保留。普通 state 不含 URL、退出后详情返回 401；不会向工具输出订阅地址或名称。
+
+## v0.1.5 异步操作反馈
+
+- 原因：旧页面仅短暂显示 7 秒排队提示，慢任务完成前缺少持续反馈。新增操作进度区域，提交时立即显示，处理期间显示等待时长；查询短暂失败自动重试，成功/失败保留结果，添加订阅期间禁止重复提交。分组操作结果显示实际是否放行与原因，不把任务完成等同于代理放行。
+- `node tests/ui_progress.cjs`：隔离 DOM 与受控接口响应，覆盖慢任务、跨标签可见、网络中断恢复、成功、失败、任务记录 400/404 丢失以及退出清理。真实管理服务 `UI_SAMPLE_SOURCE=1 node tests/ui_dom.cjs` 通过。没有把 DOM 模拟称为真实浏览器验收。
+- 本地全部后端测试 55 passed，JS 语法及发布边界检查通过；双架构 CI https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42240612521 和最终发布 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42240702274 成功。
+- 独立只读复核确认反馈、去重、秘密转义及登出清理无阻塞，指出任务记录丢失实际返回 400 的边界，已补充 400/404 处理及对应回归。复核者未自行重跑测试；该小修由主代理验证。
+- 线上部署固定镜像 `ghcr.io/youjiaxing/proxy-egress-manager:v0.1.5@sha256:a2155f40c74d584ed5a4c8624d1bf2f23018875cad9c26f199a72f8d5e53dd09`。先确认无活跃分组、预拉镜像和离线一致备份，备份目录 `/root/proxy-egress-manager-deployment-backups/20261106T151426Z-pre-v0.1.5`。真实 HTTPS 登录、状态、页面/脚本资源、健康与退出检查通过。
+- 用户已有 2 个订阅、77 个节点；升级前后来源元数据与节点配置（排除探测结果、刷新时间等运行字段）的 SHA256 完全相同，未导入测试订阅、未更改 STUN 或放行策略。Google STUN 经当前候选通道超时的问题仍独立存在，本轮没有以减少验证范围绕过。
+- 进度只保存在当前网页内；刷新或关闭会丢失进度记录，后台任务继续。服务端未新增细分阶段，因此界面准确显示“排队或处理中”，不声称知道实际下载/探测百分比。
