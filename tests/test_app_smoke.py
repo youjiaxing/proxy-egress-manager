@@ -28,7 +28,7 @@ async def test_application_process_login_health_and_shutdown(tmp_path):
         check.bind(('127.0.0.1',0))
         webport=check.getsockname()[1]
     directory=tmp_path/'core'
-    core=Core(directory,secret='isolated-app-test-core-secret-2026',capacity=2,source_capacity=2)
+    core=Core(directory,base_url='http://127.0.0.1:29091',secret='isolated-app-test-core-secret-2026',capacity=2,source_capacity=2)
     core.initialize()
     config=yaml.safe_load((directory/'config.yaml').read_text())
     config['external-controller']='127.0.0.1:29091'
@@ -44,8 +44,20 @@ async def test_application_process_login_health_and_shutdown(tmp_path):
          'CORE_SECRET':core.secret,'ADMIN_PASSWORD':'isolated-app-test-password-2026',
          'WEB_BIND':'127.0.0.1','SOCKS_BIND':'127.0.0.1','WEB_PORT':str(webport),
          'PUBLIC_URL':url,'ALLOW_LOCAL_HTTP':'1','GROUP_CAPACITY':'2','SOURCE_CAPACITY':'2'}
-    app=subprocess.Popen([sys.executable,'main.py'],cwd=Path(__file__).resolve().parents[1],env=env,stdout=applog,stderr=applog)
+    app=None
     try:
+        # This test measures the app against a running core, not a race between two OS process startups.
+        for _ in range(100):
+            try:
+                await core.ready()
+                break
+            except Exception:
+                if kernel.poll() is not None:
+                    pytest.fail((tmp_path/'core.log').read_text())
+                await asyncio.sleep(.05)
+        else:
+            pytest.fail('test core did not become ready')
+        app=subprocess.Popen([sys.executable,'main.py'],cwd=Path(__file__).resolve().parents[1],env=env,stdout=applog,stderr=applog)
         async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True),timeout=aiohttp.ClientTimeout(total=1)) as client:
             for _ in range(100):
                 try:
@@ -84,10 +96,11 @@ async def test_application_process_login_health_and_shutdown(tmp_path):
         assert await asyncio.to_thread(app.wait,5)==0
     finally:
         for process in (app,kernel):
-            if process.poll() is None:
+            if process is not None and process.poll() is None:
                 process.terminate()
                 try:
                     await asyncio.to_thread(process.wait,5)
                 except subprocess.TimeoutExpired:
                     process.kill(); await asyncio.to_thread(process.wait)
+        await core.close()
         corelog.close(); applog.close()

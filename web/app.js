@@ -10,7 +10,7 @@ async function api(path, body, method) {
   if (!response.ok) { let text = await response.text(); try { text = JSON.parse(text).error || text; } catch {} throw new Error(text || '请求失败'); }
   return response.json();
 }
-function showLogin() { $('login').hidden = false; $('dashboard').hidden = true; $('logout').hidden = true; clearInterval(refreshTimer); }
+function showLogin() { closeDialog(); $('login').hidden = false; $('dashboard').hidden = true; $('logout').hidden = true; clearInterval(refreshTimer); }
 async function authenticated() { $('login').hidden = true; $('dashboard').hidden = false; $('logout').hidden = false; await refresh(); clearInterval(refreshTimer); refreshTimer = setInterval(() => refresh().catch(e => message(e.message)), 8000); }
 async function action(kind, data = {}) {
   const {job} = await api('/api/action', {kind,...data});
@@ -45,7 +45,7 @@ function renderGroups() {
   }).join('') || '<p class="empty">尚无出口组，创建后验证才会放行。</p>';
 }
 function renderSources() {
-  $('source-list').innerHTML = state.sources.map(s=>`<article><div class="section-title"><h2>${esc(s.name)}</h2><span class="badge ${s.enabled?'active':'paused'}">${s.enabled?'启用':'停用'}</span></div><p class="muted">来源 ${s.slot} · ${Object.values(state.nodes).filter(n=>n.source===s.slot).length} 节点<br>上次刷新：${date(s.refreshed_at)}<br>${esc(s.error||'订阅秘密已隐藏')}</p><div class="actions"><button data-source-refresh="${s.slot}">刷新 / 导入</button><button class="quiet" data-source-toggle="${s.slot}">${s.enabled?'停用':'启用'}</button><button class="quiet" data-source-delete="${s.slot}">删除</button></div></article>`).join('') || '<p class="empty">添加 HTTPS 订阅，或直接导入 Mihomo YAML / URI 文本。</p>';
+  $('source-list').innerHTML = state.sources.map(s=>`<article><div class="section-title"><h2>${esc(s.name)}</h2><span class="badge ${s.enabled?'active':'paused'}">${s.enabled?'启用':'停用'}</span></div><p class="muted">来源 ${s.slot} · ${Object.values(state.nodes).filter(n=>n.source===s.slot).length} 节点<br>上次刷新：${date(s.refreshed_at)}<br>${esc(s.error||'订阅秘密已隐藏')}</p><div class="actions"><button class="quiet" data-source-edit="${s.slot}">编辑</button><button data-source-refresh="${s.slot}">刷新 / 导入</button><button class="quiet" data-source-toggle="${s.slot}">${s.enabled?'停用':'启用'}</button><button class="quiet" data-source-delete="${s.slot}">删除</button></div></article>`).join('') || '<p class="empty">添加 HTTPS 订阅，或直接导入 Mihomo YAML / URI 文本。</p>';
 }
 function renderNodes() {
   if (!state) return;
@@ -62,16 +62,19 @@ function fillSettings() {
   $('alerts-form').elements.alert_enabled.checked = state.settings.alert_enabled;
   $('alerts-form').elements.alert_url.placeholder = state.settings.alert_configured?'已配置；留空保留':'https://…';
 }
-function formDialog(title, fields, submit) {
-  $('dialog-title').textContent = title; $('dialog-fields').innerHTML = fields; dialogSubmit = submit; $('dialog').showModal();
+function formDialog(title, fields, submit, submitLabel = '确认') {
+  $('dialog-title').textContent = title; $('dialog-fields').innerHTML = fields; $('dialog-form').querySelector('[type=submit]').textContent = submitLabel; dialogSubmit = submit; $('dialog').showModal();
 }
+function clearDialog() { $('dialog-fields').replaceChildren(); dialogSubmit = null; }
+function closeDialog() { if ($('dialog').open) $('dialog').close(); clearDialog(); }
 function guarded(fn) { return (...args) => Promise.resolve(fn(...args)).catch(e=>message(e.message)); }
 $('login-form').onsubmit = guarded(async e=>{e.preventDefault(); const password=e.target.elements.password.value; const result=await api('/api/login',{password}); csrf=result.csrf; e.target.reset(); await authenticated();});
 $('logout').onclick = guarded(async()=>{await api('/api/logout',{}); csrf=''; showLogin();});
 for (const b of document.querySelectorAll('[data-tab]')) b.onclick=guarded(async()=>{activeTab=b.dataset.tab; document.querySelectorAll('.tab').forEach(el=>el.hidden=el.id!==activeTab); document.querySelectorAll('[data-tab]').forEach(el=>el.classList.toggle('active',el===b)); if(activeTab==='history') await renderEvents();});
 $('node-filter').oninput = renderNodes; $('us-only').onchange = renderNodes;
-$('dialog-close').onclick = $('dialog-cancel').onclick = ()=>$('dialog').close();
-$('dialog-form').onsubmit = guarded(async e=>{e.preventDefault(); const values=Object.fromEntries(new FormData(e.target)); $('dialog').close(); await dialogSubmit(values);});
+$('dialog-close').onclick = $('dialog-cancel').onclick = closeDialog;
+$('dialog').addEventListener('close',()=>{if (!$('dialog').open) clearDialog();});
+$('dialog-form').onsubmit = guarded(async e=>{e.preventDefault(); const values=Object.fromEntries(new FormData(e.target)), submit=dialogSubmit; closeDialog(); await submit(values);});
 $('add-group').onclick=()=>formDialog('新建出口组','<label>组名称<input name="name" required maxlength="100"></label>',v=>action('group_add',v));
 $('add-source').onclick=()=>formDialog('添加订阅来源','<label>名称<input name="name" required maxlength="100"></label><label>HTTPS 订阅 URL<input name="url" type="url" placeholder="https://…" autocomplete="off"></label><label>或导入文本<textarea name="content" rows="7" placeholder="proxies: 或 URI 列表"></textarea></label>',v=>action('source_add',v));
 document.addEventListener('click',guarded(async e=>{
@@ -80,6 +83,11 @@ document.addEventListener('click',guarded(async e=>{
   if(b.dataset.pin) {const g=state.groups.find(g=>g.id===b.dataset.pin); if(g.pinned) await action('group_pin',{group:g.id,pinned:false}); else formDialog('钉住节点：故障时暂停，不自动切换','<label>定时解除（分钟，0 表示手动解除）<input name="minutes" type="number" min="0" value="0"></label>',v=>action('group_pin',{group:g.id,pinned:true,seconds:Number(v.minutes)*60}));}
   if(b.dataset.switch) {const id=b.dataset.switch; formDialog('切换到经验证的独立美国出口','<label>候选节点<select name="node"><option value="">自动寻找</option>'+Object.values(state.nodes).filter(n=>!n.disabled).map(n=>`<option value="${esc(n.id)}">${esc(n.name)} · 来源 ${n.source}</option>`).join('')+'</select></label><p class="muted">不会绕过双协议、美国归属和组间独立性检查；切换会断开旧会话。</p>',v=>action('group_switch',{group:id,node:v.node||null}));}
   if(b.dataset.deleteGroup && confirm('删除该组并终止其全部代理会话？')) await action('group_delete',{group:b.dataset.deleteGroup});
+  if(b.dataset.sourceEdit) {
+    const slot=Number(b.dataset.sourceEdit), source=await api('/api/sources/'+slot);
+    if ($('dashboard').hidden) return;
+    formDialog('编辑订阅来源',`<label>名称<input name="name" required maxlength="100" value="${esc(source.name)}"></label><label>HTTPS 订阅 URL<input name="url" type="url" maxlength="4096" autocomplete="off" value="${esc(source.url)}"></label><label>替换节点文本（可选）<textarea name="content" rows="5" placeholder="留空保留现有节点；也可粘贴新内容"></textarea></label><p class="muted">清空 URL 可改为仅手动导入。更换 URL 或导入文本时，校验成功才保存。</p>`,v=>action('source_update',{slot,...v}),'保存');
+  }
   if(b.dataset.sourceRefresh) {const slot=Number(b.dataset.sourceRefresh); formDialog('刷新订阅','<p>有 URL 时留空将重新下载；也可粘贴新文本。失败保留旧配置。</p><textarea name="content" rows="7"></textarea>',v=>action('source_refresh',{slot,...v}));}
   if(b.dataset.sourceToggle) await action('source_toggle',{slot:Number(b.dataset.sourceToggle)});
   if(b.dataset.sourceDelete && confirm('删除订阅？使用其节点的组将先暂停。')) await action('source_delete',{slot:Number(b.dataset.sourceDelete)});

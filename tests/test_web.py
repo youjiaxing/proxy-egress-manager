@@ -62,3 +62,22 @@ async def test_correct_password_not_locked_out_by_shared_proxy_failures(tmp_path
         assert '127.0.0.1' not in manager.attempts
     finally:
         await client.close();store.close()
+
+
+@pytest.mark.asyncio
+async def test_source_edit_details_are_explicit_authenticated_and_not_cached(tmp_path):
+    client, manager, store = await make_client(tmp_path)
+    try:
+        store.state['sources'] = [{'slot': 1, 'name': 'A <source>', 'url': 'https://private.example/sub?token=keep-secret', 'enabled': True}]
+        assert (await client.get('/api/sources/1')).status == 401
+        response = await client.post('/api/login', json={'password': 'test-password-long-enough'}, headers={'Origin': 'http://localhost'})
+        assert response.status == 200
+        response = await client.get('/api/sources/1')
+        assert response.status == 200 and response.headers['Cache-Control'] == 'no-store'
+        details = await response.json()
+        assert details == {'slot': 1, 'name': 'A <source>', 'url': 'https://private.example/sub?token=keep-secret'}
+        assert 'keep-secret' not in await (await client.get('/api/state')).text()
+        assert (await client.get('/api/sources/999')).status == 404
+        assert (await client.get('/api/sources/not-a-slot')).status == 404
+    finally:
+        await client.close(); store.close()

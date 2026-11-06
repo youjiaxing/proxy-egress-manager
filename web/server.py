@@ -43,6 +43,7 @@ class Management:
             web.get("/healthz", self.health), web.post("/api/login", self.login),
             web.post("/api/logout", self.logout), web.get("/api/session", self.session),
             web.get("/api/state", self.state), web.get("/api/events", self.events),
+            web.get("/api/sources/{slot}", self.source_details),
             web.post("/api/action", self.action), web.get("/api/jobs/{job}", self.job),
             web.post("/api/backup", self.backup), web.post("/api/restore", self.restore),
             web.get("/api/diagnostics", self.diagnostics),
@@ -150,6 +151,18 @@ class Management:
 
     async def state(self, request):
         return web.json_response(self.controller.public())
+
+    async def source_details(self, request):
+        # Secrets are returned only on explicit authenticated editing, never in the dashboard state.
+        try:
+            slot = int(request.match_info["slot"])
+        except ValueError:
+            raise web.HTTPNotFound()
+        async with self.controller.lock:
+            source = next((s for s in self.controller.state["sources"] if s["slot"] == slot), None)
+            if source is None:
+                raise web.HTTPNotFound()
+            return web.json_response({key: source[key] for key in ("slot", "name", "url")})
 
     async def events(self, request):
         return web.json_response(self.controller.store.events())

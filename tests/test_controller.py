@@ -230,3 +230,96 @@ async def test_old_observation_cannot_receive_a_fresh_deadline(controller):
     result.observed_at=c.clock()-181
     assert not await c.accept(c.group('1'),'a',result)
     assert not c.gateway.allowed('1',c.gateway.leases['1'].generation)
+
+
+@pytest.mark.asyncio
+async def test_source_rename_preserves_active_leases_and_never_refreshes(controller):
+    c = controller
+    await c.tick()
+    c.state['sources'][0]['url'] = 'https://old.example/sub?token=private'
+    before_nodes = copy.deepcopy(c.state['nodes'])
+    before_leases = {k: (v.generation, v.deadline) for k, v in c.gateway.leases.items()}
+    await c.action('source_update', {'slot': 1, 'name': ' Renamed ', 'url': c.state['sources'][0]['url']})
+    assert c.state['sources'][0]['name'] == 'Renamed'
+    assert c.state['sources'][0]['slot'] == 1
+    assert c.state['nodes'] == before_nodes
+    assert not c.core.updates
+    assert before_leases == {k: (v.generation, v.deadline) for k, v in c.gateway.leases.items()}
+    saved = __import__('json').loads(c.store.db.execute('SELECT body FROM state WHERE id=1').fetchone()[0])
+    assert saved['sources'][0]['name'] == 'Renamed'
+
+
+@pytest.mark.asyncio
+async def test_source_url_change_downloads_new_address_and_preserves_node_preferences(controller, monkeypatch):
+    from scheduler.core import parse_subscription
+    c = controller
+    content = 'proxies:\n- {name: US sample, type: socks5, server: 127.0.0.1, port: 12345}\n'
+    nodes, _ = parse_subscription(content, 1)
+    node = next(iter(nodes.values()))
+    node.update(disabled=True, priority=7, last_probe={'reason': 'old observation'})
+    c.state['nodes'] = nodes
+    c.state['sources'][0]['url'] = 'https://old.example/sub'
+    for group in c.state['groups']:
+        group.update(node=None, paused=True)
+    calls = []
+    class Response:
+        status = 200
+        @property
+        def content(self): return self
+        async def iter_chunked(self, size): yield content.encode()
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+    class Session:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return Response()
+    monkeypatch.setattr('scheduler.controller.aiohttp.ClientSession', Session)
+    await c.action('source_update', {'slot': 1, 'name': 'New name', 'url': 'https://new.example/sub?token=new'})
+    assert calls[0][0] == 'https://new.example/sub?token=new'
+    assert calls[0][1]['allow_redirects'] is False
+    assert len(calls) == 1
+    assert c.state['sources'][0]['url'] == calls[0][0]
+    assert c.state['sources'][0]['slot'] == 1
+    assert len(c.core.updates) == 1
+    assert c.state['nodes'] == nodes
+    assert c.state['nodes'][node['id']]['priority'] == 7
+
+
+@pytest.mark.asyncio
+async def test_source_failed_update_retains_old_metadata_nodes_and_redacts_error(controller, monkeypatch):
+    c = controller
+    original_source = copy.deepcopy(c.state['sources'][0])
+    original_nodes = copy.deepcopy(c.state['nodes'])
+    async def fail(slot, payload):
+        raise ValueError('network exception contains https://secret.example/?token=new-secret')
+    monkeypatch.setattr(c.core, 'update_source', fail)
+    content = 'proxies:\n- {name: US replacement, type: socks5, server: 127.0.0.1, port: 12345}\n'
+    with pytest.raises(ValueError) as error:
+        await c.action('source_update', {'slot': 1, 'name': 'Must not persist', 'url': 'https://secret.example/?token=new-secret', 'content': content})
+    assert 'new-secret' not in str(error.value) and 'secret.example' not in str(error.value)
+    assert c.state['sources'][0] == original_source
+    assert c.state['nodes'] == original_nodes
+
+
+@pytest.mark.asyncio
+async def test_source_clear_url_retains_nodes_and_stops_automatic_download(controller):
+    c = controller
+    source = c.state['sources'][0]
+    source.update(url='https://old.example/sub', error='old failure', retry_at=123)
+    before = copy.deepcopy(c.state['nodes'])
+    await c.action('source_update', {'slot': 1, 'url': '', 'name': source['name']})
+    assert not source['url'] and source['retry_at'] == 0 and source['error'] is None
+    assert c.state['nodes'] == before and not c.core.updates
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fields', [{'name': ''}, {'name': 'x'*101}, {'url': 'http://example.com/sub'}, {'url': 'https://example.com:bad/sub'}, {'url': 'https://bad host/sub'}, {'content': []}])
+async def test_source_invalid_edit_does_not_partially_apply(controller, fields):
+    c = controller
+    before = copy.deepcopy(c.state['sources'][0])
+    with pytest.raises(ValueError):
+        await c.action('source_update', {'slot': 1, **fields})
+    assert c.state['sources'][0] == before

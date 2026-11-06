@@ -37,9 +37,28 @@ async function until(fn) { for(let i=0;i<100;i++){if(fn())return;await pause(25)
   assert.match(d.getElementById('dialog-fields').textContent,/HTTPS/);
   d.getElementById('dialog-cancel').click();
   assert.equal(d.getElementById('dialog').open,false);
+  if (process.env.UI_SAMPLE_SOURCE === '1') {
+    d.querySelector('[data-source-edit="1"]').click();
+    await until(()=>d.getElementById('dialog').open);
+    assert.equal(d.querySelector('#dialog-fields [name=url]').value,'https://example.invalid/sub?token=preview-only');
+    assert.equal(d.querySelector('#dialog-form [type=submit]').textContent,'保存');
+    d.querySelector('#dialog-fields [name=name]').value='已编辑 <来源> & 名称';
+    d.getElementById('dialog-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+    assert.equal(d.getElementById('dialog-fields').children.length,0);
+    await until(()=>d.getElementById('source-list').textContent.includes('已编辑 <来源> & 名称'));
+    assert.equal(d.getElementById('source-list').textContent.includes('preview-only'),false);
+    d.querySelector('[data-source-edit="1"]').click();
+    await until(()=>d.getElementById('dialog').open);
+    assert.equal(d.querySelector('#dialog-fields [name=name]').value,'已编辑 <来源> & 名称');
+    d.getElementById('dialog-cancel').click();
+    assert.equal(d.getElementById('dialog-fields').children.length,0);
+    d.querySelector('[data-source-edit="1"]').click();
+    await until(()=>d.getElementById('dialog').open);
+  }
   d.getElementById('logout').click();
   await until(()=>d.getElementById('dashboard').hidden);
   assert.equal(d.getElementById('login').hidden,false);
+  assert.equal(d.getElementById('dialog-fields').children.length,0);
   assert.deepEqual(errors,[]);
   dom.window.close();
   console.log('UI DOM simulation: login, group cards, tabs, source dialog, logout passed');

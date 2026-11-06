@@ -329,7 +329,40 @@ class Controller:
                 self.state["sources"].append(source)
             elif kind.startswith("source_"):
                 source = next(s for s in self.state["sources"] if s["slot"] == int(data["slot"]))
-                if kind == "source_refresh":
+                if kind == "source_update":
+                    name, url = data.get("name", source["name"]), data.get("url", source["url"])
+                    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
+                        raise ValueError("订阅名称须为 1–100 个字符")
+                    if not isinstance(url, str) or len(url) > 4096 or any(ord(c) < 32 or c.isspace() for c in url.strip()):
+                        raise ValueError("订阅 URL 无效")
+                    url = url.strip()
+                    try:
+                        parsed = urlparse(url)
+                        valid_url = not url or (parsed.scheme == "https" and parsed.hostname and (parsed.port is None or 1 <= parsed.port <= 65535))
+                    except ValueError:
+                        valid_url = False
+                    if not valid_url:
+                        raise ValueError("订阅 URL 必须是有效的 HTTPS 地址")
+                    content = data.get("content")
+                    if content is not None and not isinstance(content, str):
+                        raise ValueError("订阅文本无效")
+                    content = content if content and content.strip() else None
+                    updated = dict(source, name=name.strip(), url=url)
+                    refresh = content is not None or (url and url != source["url"])
+                    if refresh:
+                        # Do not replace the stored identity or credentials before validation succeeds.
+                        try:
+                            await self.refresh_source(updated, content)
+                        except Exception:
+                            raise ValueError("订阅更新失败，已保留原地址和节点；请检查 URL 或导入内容") from None
+                    elif not url:
+                        updated.update(retry_at=0, error=None)
+                    source.update(updated)
+                    if not refresh:
+                        self.store.save()
+                        self.event("operation", "订阅信息已更新")
+                        return  # Renaming or removing the URL must not trigger provider updates/probes.
+                elif kind == "source_refresh":
                     await self.refresh_source(source, data.get("content") or None)
                 elif kind in ("source_toggle", "source_delete"):
                     for group in self.state["groups"]:
