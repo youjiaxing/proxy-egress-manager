@@ -75,7 +75,7 @@ async function refresh() {
   $('health').textContent = ok ? '● 后台检测运行中' : '● 后台检测暂时失联'; $('health').className = 'badge ' + (ok ? 'active' : 'paused');
   const active = state.groups.filter(g => g.lease_valid).length;
   const ips = new Set(state.groups.flatMap(g => [...g.tcp_ips,...g.udp_ips]));
-  $('summary').innerHTML = [[active+'/'+state.groups.length,'可用分组'],[state.sources.filter(s=>s.enabled).length,'启用的订阅来源'],[Object.keys(state.nodes).length,'候选节点'],[ips.size,'已记录的独立出口地址']].map(([v,t])=>`<div class="metric"><strong>${esc(v)}</strong><span>${t}</span></div>`).join('');
+  $('summary').innerHTML = [[active+'/'+state.groups.length,'可用分组'],[state.sources.filter(s=>s.enabled).length,'启用的订阅来源'],[Object.keys(state.nodes).length,'候选节点'],[ips.size,'已记录的出口 IP']].map(([v,t])=>`<div class="metric"><strong>${esc(v)}</strong><span>${t}</span></div>`).join('');
   renderGroups(); renderSources(); if (!document.activeElement?.matches('#node-list input')) renderNodes();
   if (activeTab === 'history') await renderEvents();
   if (!document.querySelector('#settings input:focus, #settings textarea:focus')) fillSettings();

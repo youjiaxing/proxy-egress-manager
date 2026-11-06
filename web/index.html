@@ -2,7 +2,7 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>出口管理 · Proxy Egress Manager</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body><header><a class="brand" href="/">◈ <span>出口管理<small>PROXY EGRESS MANAGER</small></span></a><div id="health" class="badge">等待连接</div><button id="logout" class="quiet" hidden>退出登录</button></header>
 <main><section id="login" class="login"><div class="eyebrow">独立出口 · 稳定保持</div><h1>管理你的代理出口</h1><form id="login-form"><label>管理员密码<input type="password" name="password" autocomplete="current-password" required minlength="16"></label><button type="submit">登录管理台 →</button></form><p class="muted">凭据由部署者设置，没有默认密码。</p></section>
-<div id="dashboard" hidden><div class="page-title"><div><div class="eyebrow">控制台</div><h1>出口与分组</h1></div><button id="add-group">＋ 新建分组</button></div><div class="notice">隔离范围：仅配置的 HTTPS / STUN 目标所见出口。其他目的地和地址族未知；暂停与切换会断开旧会话。</div><div id="maintenance-notice" class="notice" role="alert" hidden>恢复尚未完整提交：全部代理保持关闭，重启不会解除。请重试有效备份或使用离线恢复。</div><div id="summary" class="summary"></div>
+<div id="dashboard" hidden><div class="page-title"><div><div class="eyebrow">控制台</div><h1>出口与分组</h1></div><button id="add-group">＋ 新建分组</button></div><div class="notice">出口检查只覆盖设置中的检测目标，不能保证访问其他网站时各组出口仍不同。暂停或更换节点会断开已有连接。</div><div id="maintenance-notice" class="notice" role="alert" hidden>恢复尚未完整提交：全部代理保持关闭，重启不会解除。请重试有效备份或使用离线恢复。</div><div id="summary" class="summary"></div>
 <section id="operations" class="operations" role="status" aria-live="polite" hidden><div class="section-title"><h2>操作进度</h2><button id="clear-operations" class="quiet">清除已结束记录</button></div><p class="muted">处理中可切换页面标签；刷新或关闭网页会丢失此处进度，后台任务仍会继续。</p><ul id="operation-list"></ul></section>
 <nav aria-label="管理页面"><button data-tab="groups" class="active">出口分组</button><button data-tab="sources">订阅来源</button><button data-tab="nodes">候选节点</button><button data-tab="history">事件记录</button><button data-tab="settings">设置与恢复</button></nav>
 <section id="groups" class="tab"><p class="group-intro">一个分组就是一个固定的代理入口。业务使用这个入口，系统负责选择和检查背后的代理节点；换节点后，入口地址不变。</p>
@@ -23,4 +23,4 @@
 <div id="message" role="status" hidden></div>
 <div id="help-tooltip" role="tooltip" hidden></div>
 <dialog id="dialog"><form id="dialog-form"><div class="section-title"><h2 id="dialog-title"></h2><button type="button" id="dialog-close" class="quiet">✕</button></div><div id="dialog-fields"></div><div class="dialog-footer"><button type="button" id="dialog-cancel" class="quiet">取消</button><button type="submit">确认</button></div></form></dialog>
-</main><footer>Proxy Egress Manager · MIT · 网关授权失效即停止转发</footer></body></html>
+</main><footer>Proxy Egress Manager · MIT · 验证失效时停止转发</footer></body></html>
