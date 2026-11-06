@@ -409,3 +409,16 @@ async def test_source_rename_save_failure_keeps_old_metadata(controller, monkeyp
     with pytest.raises(OSError):
         await c.action('source_update',{'slot':1,'name':'must not remain in memory'})
     assert c.state['sources'][0]==before
+
+
+@pytest.mark.asyncio
+async def test_source_edit_persistent_disk_failure_revokes_every_group(controller, monkeypatch):
+    c=controller
+    await c.tick()
+    assert all(c.gateway.allowed(g['id'],c.gateway.leases[g['id']].generation) for g in c.state['groups'])
+    def fail():raise OSError('persistent disk failure')
+    monkeypatch.setattr(c.store,'save',fail)
+    # Same nodes: provider editing would normally preserve the existing leases.
+    with pytest.raises(OSError):await c.halt_source_edit('rollback failed')
+    assert c.maintenance
+    assert all(not c.gateway.allowed(g['id'],c.gateway.leases[g['id']].generation) for g in c.state['groups'])

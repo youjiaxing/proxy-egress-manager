@@ -54,6 +54,14 @@ class Controller:
         for group in self.state["groups"]:
             await self.pause(group, reason)
 
+    async def halt_source_edit(self, reason):
+        self.maintenance = True
+        # Revoke every lease before any audit/database write can fail on a full disk.
+        await asyncio.gather(*(self.gateway.revoke(g["id"]) for g in self.state["groups"]))
+        for group in self.state["groups"]:
+            group.update(status="paused", reason=reason)
+        self.store.save()
+
     async def start(self):
         for group in self.state["groups"]:
             await self.gateway.listen(group["id"], group["port"])
@@ -333,15 +341,13 @@ class Controller:
                     self.store.save()
                     finish_maintenance(self.store.directory)
                 except BaseException:
-                    self.maintenance = True
-                    await self.pause_all("订阅编辑回退未完成，保持维护暂停")
+                    await self.halt_source_edit("订阅编辑回退未完成，保持维护暂停")
             raise
         if stored_source is not None:
             try:
                 finish_maintenance(self.store.directory)
             except BaseException:
-                self.maintenance = True
-                await self.pause_all("订阅编辑提交标记未清除，保持维护暂停")
+                await self.halt_source_edit("订阅编辑提交标记未清除，保持维护暂停")
                 raise
         try:
             self.event("source", "订阅已校验并刷新，保持未变化的在用映射")
