@@ -68,3 +68,17 @@
 - amd64 manifest：`sha256:6145da5e99c310a8108acba07ce41dd18c06570aeccd71005d1663aa85524951`；arm64 manifest：`sha256:b9641902c616e474520cbfe42e0bcd817e6f2e1947d24f2efe95b3fc4adf5d55`。
 - 下载后的实际发布镜像再次运行完整 fixture 测试：arm64 37 项通过（4.58 秒），amd64 37 项通过（7.90 秒，本机转译）。固定索引镜像的隔离 Compose 启动与健康检查通过，退出清理全部测试容器、网络、数据卷。
 - GitHub CLI 的现有令牌没有 read:packages scope，因此包元数据 API 返回 403；未申请额外权限，公开可用性由实际匿名拉取验证。未部署远程服务器或接入真实订阅。
+
+## VPS 首次部署与公网边界验收
+
+- 按用户授权通过 SSH 部署 `v0.1.0` 固定摘要，独立 Compose 项目为 `proxy-egress-manager`，使用原有共享网络 `sub2api-network`。应用目录位于 `/opt/1panel/docker/compose/proxy-egress-manager`；没有修改既有业务容器或业务代理设置。
+- 管理域名 `https://proxy.youjiaxing.top`。复用服务器已有阿里云 DNS 账号，仅新增精确 `proxy` A 记录，未改泛域名或其他子域名。公网 DNS-over-HTTPS 验证新 A 记录生效，该名称不再继承原泛域名的 IPv6 结果。
+- 通过 SSH 在 1Panel 使用的 OpenResty `conf.d` 与 `sites` 目录新增独立站点配置，未写 1Panel 数据库，因此不是面板网站列表中已登记的站点。后续应按配置文件维护，不要在 UI 重复创建同名站点。先通过 `nginx -t` 并重载，验证 HTTPS 已使用新证书、80 仅 301 跳转，再启动应用。
+- 使用服务器既有 acme.sh 和阿里云 DNS challenge 申请独立证书，有效期 2026-11-06 至 2027-02-04。证书安装到新站点 ssl 目录，私钥 0600；已有 ACME cron 包含此证书，续期 hook 在配置测试通过后重载 OpenResty。未更改其他站点证书。
+- 管理密码通过私密输入写入权限 0600 的服务器环境文件，没有写入聊天、Git 或日志。核心使用独立随机秘密。API Key 未提供，不需要启用 1Panel API；未修改面板认证或 MFA。
+- 应用启动与健康检查通过。实际 HTTPS 登录成功，生产 Cookie 的 Secure/HttpOnly/SameSite=Strict 标志正确；无 CSRF 操作返回 403，退出后状态接口返回 401。OpenResty 登录限流实测出现 429。UID 10001、只读根文件系统与唯一 `127.0.0.1:18080` 管理映射已核对。
+- 实际状态为订阅 0、节点 0、分组 2，全部组 `lease_valid=false`；未导入测试订阅或真实订阅，未让业务使用代理。
+- 独立外部机器验证：https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42221203514 成功。检查可信 TLS、DNS、HTTP 跳转、未认证 API 拒绝、错误 Origin 拒绝，公网 1081/1082/9090/18080 均不可达。
+- 本机网络曾对多个随机端口立即报告 TCP connect 成功，不能据此判断公网监听；上述端口结论以独立 GitHub runner 与服务器监听/映射证据为准。一次新 SSH 连接遇到不同主机密钥时严格校验拒绝，未传凭据；随后原密钥连接恢复并核对服务器公钥匹配原 known_hosts，未接受其他密钥或关闭校验。
+- 公网管理面没有 MFA、SSO 或自动漏洞修复保证。现有边界是 HTTPS、独有强口令、登录限流、会话与 CSRF 防护；管理员能导出订阅秘密及配置外部目标，必须作为高权限入口管理。真实订阅、TCP/UDP 美国出口及组间独立性仍需后续接入验收；此次上线只证明管理面及端口边界。
+- 同一独立安全复核者检查已加载配置与待审配置摘要一致，核对证书、HTTP 跳转、回环映射、续期 hook 和外部验收，确认公网管理面边界闭合，并撤回本机 TCP 握手误报。
