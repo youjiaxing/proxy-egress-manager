@@ -7,13 +7,13 @@
 - 一个用于管理网页的域名及 HTTPS 证书，能访问机场订阅与身份/国家查询服务。
 - 获取项目版本镜像与固定的 `metacubex/mihomo:v1.19.33`；Compose 已固定经 registry 核对的多架构摘要。目标为 Linux amd64 / arm64，未经该架构实际构建运行测试不宣称已支持。
 
-`v0.1.0` 已公开发布，默认使用以下经过匿名拉取核验的固定镜像：
+`v0.1.1` 已公开发布，默认使用以下经过匿名拉取核验的固定镜像：
 
 ```text
-ghcr.io/youjiaxing/proxy-egress-manager:v0.1.0@sha256:e4d5423e856c3fd918e9fe6c37c373ac8b9d19c06a440c68f6fb4bf5ff59325a
+ghcr.io/youjiaxing/proxy-egress-manager:v0.1.1@sha256:7f00b9c7436f95263a83032821e429f76d53d779a4d248504160a4ef2cb0b77e
 ```
 
-源码与 Release：https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.1.0 。原生 Linux amd64 / arm64 CI 均通过；真实 VPS、1Panel/HTTPS 和真实订阅仍须现场验收。不要使用未经核验的陌生镜像站。
+源码与 Release：https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.1.1 。原生 Linux amd64 / arm64 CI 均通过；真实 VPS、1Panel/HTTPS 和真实订阅仍须现场验收。不要使用未经核验的陌生镜像站。
 
 ## 首次部署
 
