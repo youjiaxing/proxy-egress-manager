@@ -2,7 +2,7 @@
 let csrf = '', state = null, activeTab = 'groups', refreshTimer, dialogSubmit;
 const operations = new Map();
 let operationSession = 0;
-const operationNames = {source_add:'添加订阅', source_update:'编辑订阅', source_refresh:'刷新订阅', source_toggle:'更改订阅状态', source_delete:'删除订阅', group_switch:'切换出口', group_check:'检测出口', group_resume:'恢复分组', group_pause:'暂停分组', group_pin:'更改钉住', group_add:'新建分组', group_delete:'删除分组', settings:'保存设置', node_update:'更新节点'};
+const operationNames = {source_add:'添加订阅', source_update:'编辑订阅', source_refresh:'刷新订阅', source_toggle:'更改订阅状态', source_delete:'删除订阅', group_switch:'切换出口', group_check:'检测出口', group_resume:'恢复分组', group_pause:'暂停分组', group_pin:'更改节点固定方式', group_add:'新建分组', group_delete:'删除分组', settings:'保存设置', node_update:'更新节点'};
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const date = value => value ? new Date(value * 1000).toLocaleString('zh-CN') : '尚未验证';
@@ -13,7 +13,7 @@ async function api(path, body, method) {
   if (!response.ok) { let text = await response.text(); try { text = JSON.parse(text).error || text; } catch {} const error=new Error(text || '请求失败'); error.status=response.status; throw error; }
   return response.json();
 }
-function showLogin() { operationSession++; operations.clear(); renderOperations(); closeDialog(); $('login').hidden = false; $('dashboard').hidden = true; $('logout').hidden = true; clearInterval(refreshTimer); }
+function showLogin() { hideHelp(); renderGroups.previous=null; operationSession++; operations.clear(); renderOperations(); closeDialog(); $('login').hidden = false; $('dashboard').hidden = true; $('logout').hidden = true; clearInterval(refreshTimer); }
 async function authenticated() { $('login').hidden = true; $('dashboard').hidden = false; $('logout').hidden = false; await refresh(); clearInterval(refreshTimer); refreshTimer = setInterval(() => refresh().catch(e => message(e.message)), 8000); }
 async function action(kind, data = {}) {
   const key = [kind, data.group || '', data.slot || '', data.node || ''].join(':');
@@ -59,7 +59,7 @@ async function waitForJob(job, operation) {
         await refresh();
         if (result.status==='done' && operation.key?.startsWith('group_')) {
           const group=state.groups.find(g=>g.id===operation.key.split(':')[1]);
-          if(group) operation.detail='处理完成：'+(group.lease_valid?'放行中':'未放行')+'；'+group.reason;
+          if(group) operation.detail='处理完成：'+(group.lease_valid?'可用':'暂不可用')+'；'+groupReason(group.reason);
         }
       } catch { operation.detail+=' 页面状态暂时刷新失败，请稍后重试。'; }
       if (operation.session !== operationSession) return;
@@ -72,20 +72,76 @@ async function refresh() {
   state = await api('/api/state');
   const ok = state.health.scheduler_valid && !state.health.maintenance;
   $('maintenance-notice').hidden = !state.health.maintenance;
-  $('health').textContent = ok ? '● 调度授权有效' : '● 调度授权失效'; $('health').className = 'badge ' + (ok ? 'active' : 'paused');
+  $('health').textContent = ok ? '● 后台检测运行中' : '● 后台检测暂时失联'; $('health').className = 'badge ' + (ok ? 'active' : 'paused');
   const active = state.groups.filter(g => g.lease_valid).length;
   const ips = new Set(state.groups.flatMap(g => [...g.tcp_ips,...g.udp_ips]));
-  $('summary').innerHTML = [[active+'/'+state.groups.length,'正在放行的分组'],[state.sources.filter(s=>s.enabled).length,'启用的订阅来源'],[Object.keys(state.nodes).length,'候选节点'],[ips.size,'已记录的独立出口地址']].map(([v,t])=>`<div class="metric"><strong>${esc(v)}</strong><span>${t}</span></div>`).join('');
+  $('summary').innerHTML = [[active+'/'+state.groups.length,'可用分组'],[state.sources.filter(s=>s.enabled).length,'启用的订阅来源'],[Object.keys(state.nodes).length,'候选节点'],[ips.size,'已记录的独立出口地址']].map(([v,t])=>`<div class="metric"><strong>${esc(v)}</strong><span>${t}</span></div>`).join('');
   renderGroups(); renderSources(); if (!document.activeElement?.matches('#node-list input')) renderNodes();
   if (activeTab === 'history') await renderEvents();
   if (!document.querySelector('#settings input:focus, #settings textarea:focus')) fillSettings();
 }
+function helpButton(control, label, attributes, help) {
+  return `<button class="quiet" data-control="${esc(control)}" data-help="${esc(help)}" ${attributes}>${esc(label)}</button>`;
+}
+let helpTarget = null, helpTimer;
+function hideHelp() {
+  clearTimeout(helpTimer);
+  if(helpTarget) helpTarget.removeAttribute('aria-describedby');
+  helpTarget=null; $('help-tooltip').hidden=true;
+}
+function showHelp(target) {
+  if(!target?.dataset.help) return;
+  hideHelp(); helpTarget=target;
+  const tip=$('help-tooltip'); tip.textContent=target.dataset.help; tip.hidden=false;
+  target.setAttribute('aria-describedby','help-tooltip');
+  const rect=target.getBoundingClientRect(), box=tip.getBoundingClientRect();
+  tip.style.left=Math.max(12,Math.min(rect.left,innerWidth-box.width-12))+'px';
+  tip.style.top=Math.max(12,rect.bottom+box.height+10<=innerHeight ? rect.bottom+8 : rect.top-box.height-8)+'px';
+}
+function groupReason(reason) {
+  const meanings = {
+    '等待双协议验证':'正在等待 TCP 和 UDP 连接验证，通过后才能使用。',
+    '启动后等待重验':'服务刚启动，正在重新验证节点。',
+    '手动暂停':'你已暂停此分组，点击“启用分组”后才会继续验证和使用。',
+    '节点不可用或订阅已停用':'尚无可用的当前节点，或其订阅已停用；系统会按设置寻找合格节点。',
+    '没有已验证的独立美国备用出口，保留占用等待恢复':'本轮暂未找到通过全部检查、且与其他组出口不重复的美国节点；该组目前不能使用，系统会继续检查。',
+    '双协议美国出口已验证':'TCP 和 UDP 均已验证为美国出口，且与其他组已记录的出口不重复。',
+    '钉住节点不合格，暂停且不切换':'当前节点未通过检查；由于你固定了节点，该组停止转发，不自动更换。',
+    '出口身份到期；继续独立连通探测':'上次出口验证已过期，正在重新检查；通过前暂停使用。',
+    '出口身份到期':'上次出口验证已过期，通过重新检查前暂停使用。',
+    '调度授权到期':'后台检测未能及时确认运行正常，已停止转发，等待检测恢复。',
+    '组间出口冲突，等待串行重验':'检测到不同分组可能共用同一出口，已停止使用并重新检查。',
+    '已观测组间出口冲突':'当前出口与其他分组重复，已停止使用并寻找合格节点。',
+    '组间出口冲突':'当前出口与其他分组重复，已停止使用并重新检查。',
+    '非美国出口':'检测到当前节点的出口不在美国，不能使用。',
+    '已观测非美国出口':'检测到当前节点的出口不在美国，不能使用。',
+    '观测已超过身份有效期，等待下一次重验':'这次检测结果已过期，需要重新验证后才能使用。',
+    '旧会话仍在清理，等待下一轮重验':'正在关闭旧连接，完成后会重新验证。',
+    '订阅节点改变或消失，重验前暂停':'订阅中的当前节点已改变或被移除，重新验证前暂停使用。',
+    '后端映射变化，重新选择并验证':'实际连接的节点发生变化，正在重新选择和验证。',
+    '出口/节点更新：清理旧会话后提交占用':'正在更换节点或出口，先关闭旧连接，再验证是否可以使用。',
+    '观测出口变化/异常，清理会话并等待完整提交':'检测到出口变化或异常，先关闭旧连接，验证通过后再使用。'
+  };
+  return meanings[reason] || reason;
+}
 function renderGroups() {
-  $('group-list').innerHTML = state.groups.map(g => {
+  const markup = state.groups.map(g => {
     const n = state.nodes[g.node], source = n && state.sources.find(s=>s.slot===n.source);
-    const status = g.lease_valid ? '放行中' : '已暂停';
-    return `<article><div class="section-title"><h2>${esc(g.name)}</h2><span class="badge ${g.lease_valid?'active':'paused'}">${status}</span></div><div class="endpoint">socks5://${esc(g.endpoint)}</div><dl class="details"><dt>节点 / 来源</dt><dd>${esc(n?.name || '未分配')} / ${esc(source?.name || '—')}</dd><dt>TCP 出口</dt><dd>${esc(g.tcp_ips.join(', ')||'未验证')}</dd><dt>UDP 出口</dt><dd>${esc(g.udp_ips.join(', ')||'未验证')}</dd><dt>验证时间</dt><dd>${date(g.verified_at)}</dd><dt>本次保持</dt><dd>${g.since?Math.floor((Date.now()/1000-g.since)/60)+' 分钟':'—'}</dd><dt>节点钉住</dt><dd>${g.pinned ? (g.pin_until?'至 '+date(g.pin_until):'手动解除前保持'):'未钉住'}</dd></dl><div class="actions"><button data-action="group_check" data-group="${g.id}">检测</button><button class="quiet" data-switch="${g.id}">切换</button><button class="quiet" data-action="${g.paused?'group_resume':'group_pause'}" data-group="${g.id}">${g.paused?'恢复':'暂停'}</button><button class="quiet" data-pin="${g.id}">${g.pinned?'解除钉住':'钉住'}</button><button class="quiet" data-delete-group="${g.id}">删除</button></div><p class="reason">${esc(g.reason)}</p></article>`;
-  }).join('') || '<p class="empty">尚无出口组，创建后验证才会放行。</p>';
+    const status = g.paused ? '已手动暂停' : g.lease_valid ? '可用' : '暂不可用';
+    const buttons = [
+      helpButton('check-'+g.id,'检查连接',`data-action="group_check" data-group="${esc(g.id)}"`,'安排一次全组连接和出口验证；手动暂停的组仍保持暂停。必要时系统可能寻找替代节点。'),
+      helpButton('switch-'+g.id,'更换节点',`data-switch="${esc(g.id)}"`,'自动选择或指定新的代理节点，验证合格后才使用。切换会断开已有连接；请先启用分组并解除固定。'),
+      helpButton('pause-'+g.id,g.paused?'启用分组':'暂停分组',`data-action="${g.paused?'group_resume':'group_pause'}" data-group="${esc(g.id)}"`,g.paused?'重新启用并等待验证，验证通过前仍不能使用。':'停止这个代理入口并断开已有连接，直到你再次启用。'),
+      helpButton('pin-'+g.id,g.pinned?'允许自动换节点':'固定当前节点',`data-pin="${esc(g.id)}" aria-disabled="${!g.pinned&&!g.node}"`,g.pinned?'解除固定；正常时保持当前节点，满足切换条件后才寻找替代节点。':!g.node?'请先等待分组获得节点，再固定当前节点。':'保持当前节点，不自动更换；故障或验证未通过时停止转发。固定节点不代表固定公网 IP。'),
+      helpButton('delete-'+g.id,'删除分组',`data-delete-group="${esc(g.id)}"`,'删除该代理入口并断开已有连接。使用此地址的业务需要重新配置；订阅不会删除。')
+    ].join('');
+    return `<article><div class="section-title"><h2>${esc(g.name)}</h2><span class="badge ${g.lease_valid?'active':'paused'}">${status}</span></div><p class="endpoint-label">业务中填写的代理地址</p><div class="endpoint">socks5://${esc(g.endpoint)}</div><dl class="details"><dt>当前节点 / 订阅</dt><dd>${esc(n?.name || '尚未找到合格节点')} / ${esc(source?.name || '—')}</dd><dt>出口地址（TCP）</dt><dd>${esc(g.tcp_ips.join(', ')||'尚未验证')}</dd><dt>出口地址（UDP）</dt><dd>${esc(g.udp_ips.join(', ')||'尚未验证')}</dd><dt>上次验证时间</dt><dd>${date(g.verified_at)}</dd><dt>当前选择已保持</dt><dd>${g.since?Math.floor((Date.now()/1000-g.since)/60)+' 分钟':'—'}</dd><dt>自动更换节点</dt><dd>${g.pinned ? (g.pin_until?'已关闭，至 '+date(g.pin_until):'已关闭，需手动允许'):'已允许，正常时保持当前节点'}</dd></dl><div class="actions">${buttons}</div><p class="reason">当前情况：${esc(groupReason(g.reason))}</p></article>`;
+  }).join('') || '<p class="empty">尚无分组，创建后会验证可用节点。</p>';
+  // Unchanged polling results should not interrupt reading a tooltip or keyboard navigation.
+  if(markup===renderGroups.previous) return;
+  const focused=document.activeElement?.dataset.control;
+  hideHelp(); $('group-list').innerHTML=markup; renderGroups.previous=markup;
+  if(focused) [...$('group-list').querySelectorAll('[data-control]')].find(b=>b.dataset.control===focused)?.focus({preventScroll:true});
 }
 function renderSources() {
   $('source-list').innerHTML = state.sources.map(s=>`<article><div class="section-title"><h2>${esc(s.name)}</h2><span class="badge ${s.enabled?'active':'paused'}">${s.enabled?'启用':'停用'}</span></div><p class="muted">来源 ${s.slot} · ${Object.values(state.nodes).filter(n=>n.source===s.slot).length} 节点<br>上次刷新：${date(s.refreshed_at)}<br>${esc(s.error||'订阅秘密已隐藏')}</p><div class="actions"><button class="quiet" data-source-edit="${s.slot}">编辑</button><button data-source-refresh="${s.slot}">刷新 / 导入</button><button class="quiet" data-source-toggle="${s.slot}">${s.enabled?'停用':'启用'}</button><button class="quiet" data-source-delete="${s.slot}">删除</button></div></article>`).join('') || '<p class="empty">添加 HTTPS 订阅，或直接导入 Mihomo YAML / URI 文本。</p>';
@@ -106,6 +162,7 @@ function fillSettings() {
   $('alerts-form').elements.alert_url.placeholder = state.settings.alert_configured?'已配置；留空保留':'https://…';
 }
 function formDialog(title, fields, submit, submitLabel = '确认') {
+  hideHelp();
   $('dialog-title').textContent = title; $('dialog-fields').innerHTML = fields; $('dialog-form').querySelector('[type=submit]').textContent = submitLabel; dialogSubmit = submit; $('dialog').showModal();
 }
 function clearDialog() { $('dialog-fields').replaceChildren(); dialogSubmit = null; }
@@ -119,14 +176,31 @@ $('node-filter').oninput = renderNodes; $('us-only').onchange = renderNodes;
 $('dialog-close').onclick = $('dialog-cancel').onclick = closeDialog;
 $('dialog').addEventListener('close',()=>{if (!$('dialog').open) clearDialog();});
 $('dialog-form').onsubmit = guarded(async e=>{e.preventDefault(); const values=Object.fromEntries(new FormData(e.target)), submit=dialogSubmit; closeDialog(); await submit(values);});
-$('add-group').onclick=()=>formDialog('新建出口组','<label>组名称<input name="name" required maxlength="100"></label>',v=>action('group_add',v));
+$('add-group').onclick=()=>formDialog('新建分组','<p>每个分组分配一个独立的代理入口，供业务填写。创建后会自动寻找并验证节点。</p><label>分组名称<input name="name" placeholder="例如：业务 A" required maxlength="100"></label>',v=>action('group_add',v));
 $('add-source').onclick=()=>formDialog('添加订阅来源','<label>名称<input name="name" required maxlength="100"></label><label>HTTPS 订阅 URL<input name="url" type="url" placeholder="https://…" autocomplete="off"></label><label>或导入文本<textarea name="content" rows="7" placeholder="proxies: 或 URI 列表"></textarea></label>',v=>action('source_add',v));
+document.addEventListener('pointerover',e=>{const b=e.target.closest('[data-help]');if(b || $('help-tooltip').contains(e.target))clearTimeout(helpTimer);if(b && b!==helpTarget) showHelp(b);});
+document.addEventListener('pointerout',e=>{const tip=$('help-tooltip');if(helpTarget && (helpTarget.contains(e.target) || tip.contains(e.target)) && !helpTarget.contains(e.relatedTarget) && !tip.contains(e.relatedTarget)) helpTimer=setTimeout(hideHelp,200);});
+document.addEventListener('focusin',e=>{const b=e.target.closest('[data-help]');if(b)showHelp(b);else hideHelp();});
+document.addEventListener('focusout',e=>{if(e.target===helpTarget)hideHelp();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')hideHelp();});
+window.addEventListener('resize',hideHelp);
+window.addEventListener('scroll',hideHelp,true);
 document.addEventListener('click',guarded(async e=>{
   const b=e.target.closest('button'); if(!b)return;
   if(b.dataset.action) await action(b.dataset.action,{group:b.dataset.group});
-  if(b.dataset.pin) {const g=state.groups.find(g=>g.id===b.dataset.pin); if(g.pinned) await action('group_pin',{group:g.id,pinned:false}); else formDialog('钉住节点：故障时暂停，不自动切换','<label>定时解除（分钟，0 表示手动解除）<input name="minutes" type="number" min="0" value="0"></label>',v=>action('group_pin',{group:g.id,pinned:true,seconds:Number(v.minutes)*60}));}
-  if(b.dataset.switch) {const id=b.dataset.switch; formDialog('切换到经验证的独立美国出口','<label>候选节点<select name="node"><option value="">自动寻找</option>'+Object.values(state.nodes).filter(n=>!n.disabled).map(n=>`<option value="${esc(n.id)}">${esc(n.name)} · 来源 ${n.source}</option>`).join('')+'</select></label><p class="muted">不会绕过双协议、美国归属和组间独立性检查；切换会断开旧会话。</p>',v=>action('group_switch',{group:id,node:v.node||null}));}
-  if(b.dataset.deleteGroup && confirm('删除该组并终止其全部代理会话？')) await action('group_delete',{group:b.dataset.deleteGroup});
+  if(b.dataset.pin) {
+    const g=state.groups.find(g=>g.id===b.dataset.pin);
+    if(g.pinned) await action('group_pin',{group:g.id,pinned:false});
+    else if(!g.node) message('请先等待分组获得节点，再固定当前节点。');
+    else formDialog('固定当前节点','<p>固定后不再自动换节点。当前节点故障或验证不通过时，该组停止转发；固定节点不等于固定公网 IP。</p><label>多久后允许自动换节点（分钟）<input name="minutes" type="number" min="0" value="0"></label><p class="muted">填 0 表示一直固定，直到你手动点击“允许自动换节点”。</p>',v=>action('group_pin',{group:g.id,pinned:true,seconds:Number(v.minutes)*60}),'固定当前节点');
+  }
+  if(b.dataset.switch) {
+    const id=b.dataset.switch, g=state.groups.find(g=>g.id===id);
+    if(g.paused) {message('请先点击“启用分组”，再更换节点。');return;}
+    if(g.pinned) {message('请先点击“允许自动换节点”，再更换节点。');return;}
+    formDialog('更换代理节点','<label>选择代理节点<select name="node"><option value="">系统自动选择（推荐）</option>'+Object.values(state.nodes).filter(n=>!n.disabled).map(n=>`<option value="${esc(n.id)}">${esc(n.name)} · 订阅 ${n.source}</option>`).join('')+'</select></label><p class="muted">系统会检查美国归属、TCP / UDP 连接和与其他组出口是否重复，验证通过后才使用。切换会断开已有连接；若没有合格节点，该组可能仍不可用。</p>',v=>action('group_switch',{group:id,node:v.node||null}),'开始选择并验证');
+  }
+  if(b.dataset.deleteGroup && confirm('删除这个代理入口并断开已有连接？使用此地址的业务需要重新配置，订阅不会删除。')) await action('group_delete',{group:b.dataset.deleteGroup});
   if(b.dataset.sourceEdit) {
     const slot=Number(b.dataset.sourceEdit), source=await api('/api/sources/'+slot);
     if ($('dashboard').hidden) return;

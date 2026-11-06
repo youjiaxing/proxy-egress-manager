@@ -1,6 +1,6 @@
 [project]
 name = "proxy-egress-manager"
-version = "0.1.5"
+version = "0.1.6"
 description = "Fail-closed SOCKS5 egress groups with independent TCP/UDP identity checks"
 requires-python = ">=3.12"
 license = "MIT"

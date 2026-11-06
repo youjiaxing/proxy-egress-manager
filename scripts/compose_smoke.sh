@@ -12,4 +12,7 @@ cleanup() {
 docker network create "$BUSINESS_NETWORK"
 trap cleanup EXIT
 docker compose -p "$project" up -d --no-build --wait --wait-timeout 90
+init_container=$(docker compose -p "$project" ps -aq init-core)
+test "$(docker inspect "$init_container" --format '{{.State.ExitCode}}')" = 0
+test "$(docker inspect "$init_container" --format '{{index .Config.Healthcheck.Test 0}}')" = NONE
 docker compose -p "$project" exec -T proxy-egress-manager python main.py healthcheck

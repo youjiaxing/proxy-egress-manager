@@ -27,7 +27,7 @@ async function until(fn) { for(let i=0;i<100;i++){if(fn())return;await pause(25)
   await until(()=>!d.getElementById('dashboard').hidden);
   await until(()=>d.querySelectorAll('#group-list article').length===2);
   assert.match(d.getElementById('group-list').textContent,/proxy-egress-manager:1081/);
-  assert.match(d.getElementById('group-list').textContent,/已暂停/);
+  assert.match(d.getElementById('group-list').textContent,/暂不可用/);
   for(const name of ['sources','nodes','history','settings','groups']){
     d.querySelector(`[data-tab="${name}"]`).click();
     assert.equal(d.getElementById(name).hidden,false);

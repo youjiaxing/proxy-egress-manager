@@ -25,6 +25,8 @@ services:
     <<: *app
     command: [init-core]
     restart: "no"
+    healthcheck:
+      disable: true
     networks: [backend]
   mihomo:
     image: metacubex/mihomo:v1.19.33@sha256:9211361a3ed85305383288d38c05e85862d6d5a590c10007c37fc059cca82e9c

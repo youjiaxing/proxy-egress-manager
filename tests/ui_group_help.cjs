@@ -1,0 +1,50 @@
+// Group help semantics and interactions; isolated DOM, no business proxy changes.
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const {JSDOM}=require(process.env.JSDOM_PATH||'/tmp/proxy-egress-dom/node_modules/jsdom');
+const pause=ms=>new Promise(r=>setTimeout(r,ms));
+async function until(fn){for(let i=0;i<100;i++){if(fn())return;await pause(10);}throw Error('UI condition timed out');}
+(async()=>{
+ const dom=new JSDOM(fs.readFileSync('web/index.html','utf8'),{url:'https://example.test',runScripts:'outside-only'});
+ const w=dom.window,d=w.document;
+ w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
+ w.HTMLDialogElement.prototype.close=function(){this.open=false;};
+ const g={id:'1',name:'组 <一>',node:'node-1',endpoint:'proxy-egress-manager:1081',paused:false,pinned:false,lease_valid:false,tcp_ips:[],udp_ips:[],reason:'没有已验证的独立美国备用出口，保留占用等待恢复'};
+ const state={health:{scheduler_valid:true},groups:[g],nodes:{'node-1':{name:'美国 <节点>',source:1,disabled:false}},sources:[{slot:1,name:'示例订阅',enabled:true}],settings:{}};
+ let mutations=0;
+ w.fetch=async(path,options={})=>{
+  if(options.method==='POST')mutations++;
+  return {ok:true,json:async()=>path==='/api/state'?state:{csrf:'test'}};
+ };
+ w.eval(fs.readFileSync('web/app.js','utf8')+'\nwindow.refreshForTest=refresh;');
+ await until(()=>d.querySelector('[data-control=check-1]'));
+ assert.match(d.getElementById('group-list').textContent,/暂不可用/);
+ assert.match(d.getElementById('group-list').textContent,/本轮暂未找到/);
+ assert.equal(d.getElementById('group-list').querySelector('节点'),null);
+ const tip=d.getElementById('help-tooltip');
+ let check=d.querySelector('[data-control=check-1]');check.focus();
+ assert.equal(tip.hidden,false);assert.match(tip.textContent,/全组/);
+ assert.equal(check.getAttribute('aria-describedby'),'help-tooltip');
+ await w.refreshForTest();assert.equal(d.activeElement,check);
+ d.dispatchEvent(new w.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+ assert.equal(tip.hidden,true);assert.equal(check.hasAttribute('aria-describedby'),false);
+ check.dispatchEvent(new w.Event('pointerover',{bubbles:true}));assert.equal(tip.hidden,false);
+ check.dispatchEvent(new w.MouseEvent('pointerout',{bubbles:true,relatedTarget:d.body}));
+ tip.dispatchEvent(new w.Event('pointerover',{bubbles:true}));await pause(230);assert.equal(tip.hidden,false);
+ tip.dispatchEvent(new w.MouseEvent('pointerout',{bubbles:true,relatedTarget:d.body}));await pause(230);assert.equal(tip.hidden,true);
+ d.querySelector('[data-switch="1"]').click();assert.match(d.getElementById('dialog-fields').textContent,/断开已有连接/);
+ d.getElementById('dialog-cancel').click();
+ d.querySelector('[data-pin="1"]').click();assert.match(d.getElementById('dialog-title').textContent,/固定当前节点/);
+ assert.match(d.getElementById('dialog-fields').textContent,/不等于固定公网 IP/);
+ d.getElementById('dialog-cancel').click();
+ const guide=d.querySelector('.group-guide');guide.open=true;assert.match(guide.textContent,/全组检查/);assert.match(guide.textContent,/每轮最多尝试 3 个/);
+ g.pinned=true;await w.refreshForTest();assert.match(d.querySelector('[data-pin="1"]').textContent,/允许自动换节点/);
+ d.querySelector('[data-switch="1"]').click();assert.equal(d.getElementById('dialog').open,false);assert.match(d.getElementById('message').textContent,/允许自动换节点/);
+ g.pinned=false;g.paused=true;await w.refreshForTest();assert.match(d.getElementById('group-list').textContent,/已手动暂停/);
+ assert.equal(d.querySelector('[data-control=pause-1]').textContent,'启用分组');
+ g.paused=false;g.node=null;await w.refreshForTest();
+ const pin=d.querySelector('[data-pin="1"]');assert.equal(pin.getAttribute('aria-disabled'),'true');
+ pin.click();assert.equal(d.getElementById('dialog').open,false);
+ assert.equal(mutations,0,'help and cancelled dialogs must never change configuration');
+ dom.window.close();console.log('PASS: plain labels, honest states, focus and hover help, Escape, hoverable tooltip, refresh focus, mobile guide, pin and switch explanations, no mutations');
+})().catch(e=>{console.error(e);process.exit(1);});
