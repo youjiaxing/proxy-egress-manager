@@ -158,11 +158,12 @@ class Management:
             slot = int(request.match_info["slot"])
         except ValueError:
             raise web.HTTPNotFound()
-        async with self.controller.lock:
-            source = next((s for s in self.controller.state["sources"] if s["slot"] == slot), None)
-            if source is None:
-                raise web.HTTPNotFound()
-            return web.json_response({key: source[key] for key in ("slot", "name", "url")})
+        # No await between lookup and serialization: the event loop gives a coherent
+        # snapshot without waiting behind long-running subscription/node probes.
+        source = next((s for s in self.controller.state["sources"] if s["slot"] == slot), None)
+        if source is None:
+            raise web.HTTPNotFound()
+        return web.json_response({key: source[key] for key in ("slot", "name", "url")})
 
     async def events(self, request):
         return web.json_response(self.controller.store.events())

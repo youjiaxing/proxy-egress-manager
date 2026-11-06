@@ -81,3 +81,19 @@ async def test_source_edit_details_are_explicit_authenticated_and_not_cached(tmp
         assert (await client.get('/api/sources/not-a-slot')).status == 404
     finally:
         await client.close(); store.close()
+
+
+@pytest.mark.asyncio
+async def test_source_edit_details_do_not_wait_for_scheduler_probe_lock(tmp_path):
+    import asyncio
+    client, manager, store = await make_client(tmp_path)
+    try:
+        store.state['sources'] = [{'slot': 1, 'name': 'source', 'url': 'https://example.com/sub', 'enabled': True}]
+        response=await client.post('/api/login',json={'password':'test-password-long-enough'},headers={'Origin':'http://localhost'})
+        assert response.status==200
+        async with manager.controller.lock:
+            response=await asyncio.wait_for(client.get('/api/sources/1'),timeout=1)
+            assert response.status==200
+            assert (await response.json())['slot']==1
+    finally:
+        await client.close(); store.close()
