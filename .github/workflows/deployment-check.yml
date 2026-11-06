@@ -1,0 +1,24 @@
+name: External deployment acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      hostname:
+        description: HTTPS management hostname
+        required: true
+        type: string
+      ipv4:
+        description: Expected public IPv4
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  external:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check deployed boundary without credentials
+        env:
+          DEPLOY_HOST: ${{ inputs.hostname }}
+          DEPLOY_IPV4: ${{ inputs.ipv4 }}
+        run: python3 scripts/check_deployment.py
