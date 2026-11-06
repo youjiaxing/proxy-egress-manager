@@ -13,7 +13,7 @@
 ghcr.io/youjiaxing/proxy-egress-manager:v0.1.3@sha256:15c27173b2075d83ba2a55502d9b8a9ab3908fc5e07eb810f051d9da927fc2df
 ```
 
-源码与 Release：https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.1.3 。原生 Linux amd64 / arm64 CI 均通过；真实 VPS、1Panel/HTTPS 和真实订阅仍须现场验收。不要使用未经核验的陌生镜像站。
+源码与 Release：https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.1.6 。原生 Linux amd64 / arm64 CI 均通过；真实 VPS、1Panel/HTTPS 和真实订阅仍须现场验收。不要使用未经核验的陌生镜像站。
 
 ## 首次部署
 

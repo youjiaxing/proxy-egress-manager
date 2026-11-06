@@ -2,7 +2,7 @@
 
 用于 Docker 共享网络的 SOCKS5 出口分组工具。每组使用固定入口、独立验证的美国出口；正常保持，持续故障自动寻找独立备用，没有备用则暂停。支持 TCP CONNECT 和 UDP ASSOCIATE、网页管理、多订阅、钉住、备份恢复和 webhook 告警。
 
-**状态：v0.1.5 已公开发布，VPS 管理面与 HTTPS 反代已验收。** 原生 Linux arm64 / amd64 远程 CI、镜像构建与 Compose 启动均通过；公网端口边界与登录保护已独立验证，详细范围见 [验证记录](docs/verification.md)。已接入用户订阅；独立美国出口放行仍受现场探测结果限制，公共身份服务可靠性仍需验证。不得仅凭节点名称或 `udp: true` 放行。
+**状态：v0.1.6 已公开发布，VPS 管理面与 HTTPS 反代已验收。** 原生 Linux arm64 / amd64 远程 CI、镜像构建与 Compose 启动均通过；公网端口边界与登录保护已独立验证，详细范围见 [验证记录](docs/verification.md)。已接入用户订阅；独立美国出口放行仍受现场探测结果限制，公共身份服务可靠性仍需验证。不得仅凭节点名称或 `udp: true` 放行。
 
 ## 组件
 
@@ -24,10 +24,10 @@ socks5://proxy-egress-manager:1082
 
 完整步骤：[1Panel 部署](docs/deployment.md)、[升级与恢复](docs/operations.md)、[安全与保证范围](docs/security.md)、[设计与协议](docs/architecture.md)。
 
-公开源码：[GitHub](https://github.com/youjiaxing/proxy-egress-manager)，当前版本：[v0.1.5](https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.1.5)。GHCR 镜像已验证匿名拉取，设置 `PEM_IMAGE` 为：
+公开源码：[GitHub](https://github.com/youjiaxing/proxy-egress-manager)，当前版本：[v0.1.6](https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.1.6)。GHCR 镜像已验证匿名拉取，设置 `PEM_IMAGE` 为：
 
 ```text
-ghcr.io/youjiaxing/proxy-egress-manager:v0.1.5@sha256:a2155f40c74d584ed5a4c8624d1bf2f23018875cad9c26f199a72f8d5e53dd09
+ghcr.io/youjiaxing/proxy-egress-manager:v0.1.6@sha256:6d270529f81953af4fa4714556cf6e2a7546775d060cc5d3fa7500d78be388bc
 ```
 
 优先部署固定版本与摘要。自行构建时使用 `docker compose -f compose.yaml -f compose.build.yaml build`；生产配置本身不构建源码，Mihomo 仍使用 Compose 中的固定上游摘要。
