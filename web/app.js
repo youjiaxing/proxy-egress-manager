@@ -1,5 +1,8 @@
 'use strict';
 let csrf = '', state = null, activeTab = 'groups', refreshTimer, dialogSubmit;
+const operations = new Map();
+let operationSession = 0;
+const operationNames = {source_add:'添加订阅', source_update:'编辑订阅', source_refresh:'刷新订阅', source_toggle:'更改订阅状态', source_delete:'删除订阅', group_switch:'切换出口', group_check:'检测出口', group_resume:'恢复分组', group_pause:'暂停分组', group_pin:'更改钉住', group_add:'新建分组', group_delete:'删除分组', settings:'保存设置', node_update:'更新节点'};
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const date = value => value ? new Date(value * 1000).toLocaleString('zh-CN') : '尚未验证';
@@ -7,23 +10,63 @@ function message(text) { $('message').textContent = text; $('message').hidden = 
 async function api(path, body, method) {
   const response = await fetch(path, {method: method || (body === undefined ? 'GET' : 'POST'), credentials:'same-origin', headers:body === undefined ? {} : {'Content-Type':'application/json','X-CSRF-Token':csrf}, body:body === undefined ? undefined : JSON.stringify(body)});
   if (response.status === 401) showLogin();
-  if (!response.ok) { let text = await response.text(); try { text = JSON.parse(text).error || text; } catch {} throw new Error(text || '请求失败'); }
+  if (!response.ok) { let text = await response.text(); try { text = JSON.parse(text).error || text; } catch {} const error=new Error(text || '请求失败'); error.status=response.status; throw error; }
   return response.json();
 }
-function showLogin() { closeDialog(); $('login').hidden = false; $('dashboard').hidden = true; $('logout').hidden = true; clearInterval(refreshTimer); }
+function showLogin() { operationSession++; operations.clear(); renderOperations(); closeDialog(); $('login').hidden = false; $('dashboard').hidden = true; $('logout').hidden = true; clearInterval(refreshTimer); }
 async function authenticated() { $('login').hidden = true; $('dashboard').hidden = false; $('logout').hidden = false; await refresh(); clearInterval(refreshTimer); refreshTimer = setInterval(() => refresh().catch(e => message(e.message)), 8000); }
 async function action(kind, data = {}) {
-  const {job} = await api('/api/action', {kind,...data});
-  return waitForJob(job);
-}
-async function waitForJob(job) {
-  message('操作已排队；探测期间保持原有安全边界');
-  for (let i = 0; i < 900; i++) {
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    const result = await api('/api/jobs/' + job);
-    if (result.status !== 'running') { message(result.message); await refresh(); return; }
+  const key = [kind, data.group || '', data.slot || '', data.node || ''].join(':');
+  if ([...operations.values()].some(o=>o.key===key && o.running)) { message('该操作正在处理，请查看操作进度'); return; }
+  const operation = {key, title:operationNames[kind] || '管理操作', started:Date.now(), running:true, detail:'正在提交…', session:operationSession};
+  operations.set(operation, operation); renderOperations();
+  try {
+    const {job} = await api('/api/action', {kind,...data});
+    if (operation.session !== operationSession) return;
+    await waitForJob(job, operation);
+  } catch (error) {
+    if (operation.session !== operationSession) return;
+    operation.running=false; operation.detail='未能确认结果：'+error.message+'。请先查看页面状态，勿重复提交。'; renderOperations();
   }
-  message('任务仍在运行，请稍后查看事件记录');
+}
+function renderOperations() {
+  const items=[...operations.values()];
+  $('operations').hidden=!items.length;
+  $('operation-list').innerHTML=items.map(o=>`<li><strong>${esc(o.title)}</strong><span>${esc(o.detail)}</span>${o.running?`<small>已等待 ${Math.floor((Date.now()-o.started)/1000)} 秒</small>`:''}</li>`).join('');
+  $('add-source').disabled=items.some(o=>o.running && o.key?.startsWith('source_add:'));
+}
+async function waitForJob(job, operation) {
+  operation ||= {title:'恢复备份', started:Date.now(), running:true, session:operationSession};
+  operations.set(operation, operation);
+  operation.detail='已提交，排队或处理中；节点检测可能需要数分钟。'; renderOperations();
+  while (operation.session === operationSession) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    if (operation.session !== operationSession) return;
+    let result;
+    try { result = await api('/api/jobs/' + job); }
+    catch (error) {
+      if (operation.session !== operationSession) return;
+      if(error.status===404) { operation.running=false; operation.detail='任务记录已不可用，无法确认结果，请查看订阅或分组当前状态。'; renderOperations(); return; }
+      operation.detail='暂时无法查询进度，将自动重试；这不代表操作失败，请勿重复提交。'; renderOperations();
+      await new Promise(resolve=>setTimeout(resolve,4000));
+      continue;
+    }
+    if (operation.session !== operationSession) return;
+    if (result.status !== 'running') {
+      operation.running=false;
+      operation.detail=result.status==='error'?'失败：'+result.message:'处理完成。';
+      try {
+        await refresh();
+        if (result.status==='done' && operation.key?.startsWith('group_')) {
+          const group=state.groups.find(g=>g.id===operation.key.split(':')[1]);
+          if(group) operation.detail='处理完成：'+(group.lease_valid?'放行中':'未放行')+'；'+group.reason;
+        }
+      } catch { operation.detail+=' 页面状态暂时刷新失败，请稍后重试。'; }
+      if (operation.session !== operationSession) return;
+      renderOperations(); return;
+    }
+    operation.detail='排队或处理中；节点检测可能需要数分钟，请勿重复提交。'; renderOperations();
+  }
 }
 async function refresh() {
   state = await api('/api/state');
@@ -70,6 +113,7 @@ function closeDialog() { if ($('dialog').open) $('dialog').close(); clearDialog(
 function guarded(fn) { return (...args) => Promise.resolve(fn(...args)).catch(e=>message(e.message)); }
 $('login-form').onsubmit = guarded(async e=>{e.preventDefault(); const password=e.target.elements.password.value; const result=await api('/api/login',{password}); csrf=result.csrf; e.target.reset(); await authenticated();});
 $('logout').onclick = guarded(async()=>{await api('/api/logout',{}); csrf=''; showLogin();});
+$('clear-operations').onclick=()=>{for(const [key,o] of operations) if(!o.running) operations.delete(key); renderOperations();};
 for (const b of document.querySelectorAll('[data-tab]')) b.onclick=guarded(async()=>{activeTab=b.dataset.tab; document.querySelectorAll('.tab').forEach(el=>el.hidden=el.id!==activeTab); document.querySelectorAll('[data-tab]').forEach(el=>el.classList.toggle('active',el===b)); if(activeTab==='history') await renderEvents();});
 $('node-filter').oninput = renderNodes; $('us-only').onchange = renderNodes;
 $('dialog-close').onclick = $('dialog-cancel').onclick = closeDialog;
