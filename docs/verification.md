@@ -34,13 +34,10 @@
 - 管理面与部署 Reviewer：指出恢复崩溃屏障缺失和反代登录锁定问题，已修复；同一 Reviewer 针对性复核确认闭合。
 - 两条审查中途曾遭遇模型服务 503；恢复同一 Reviewer 后完成复核，没有以主会话自审替代独立结果。
 
-## 尚未通过的现场/环境验证
+## 现场验证边界
 
-- 原生 amd64 服务器、真实 HTTPS 反代、截图视觉检查和远程 Actions 尚未验证。容器测试的真实 TCP/UDP 链路使用隔离本地 fixture，不证明机场节点或公网身份服务的现场稳定性。
-- 未发布 GHCR 镜像，未验证实际账号包权限及服务器拉取。
-- 未接入真实机场/UDP 身份端点稳定性、域名 HTTPS、1Panel/VPS、告警渠道；不宣称上线完成或实际出口足够独立。
-
-本地部署验收通过上述范围；真实订阅、远程发布和上线按既定授权边界另行接入，不因本地测试通过自动执行。验收结束删除本轮独立容器、网络、测试卷及临时配置，关闭测试页面与临时演示服务；本地验收镜像保留供复用。
+- 原生 amd64 / arm64 GitHub Actions、GHCR 发布及匿名拉取现已通过，见文末发布记录。真实服务器 HTTPS/反代、1Panel、机场订阅/身份端点及告警渠道尚未接入；不宣称 VPS 上线完成或真实出口足够独立。
+- TCP/UDP 运行测试使用隔离 fixture，不能证明机场节点及公共身份服务现场稳定性。真实订阅与服务器上线按单独授权执行。
 
 ## 发布前本地收尾
 
@@ -60,3 +57,14 @@
 - 对发布前注册表检查做五种模拟：既有版本、认证错误、网络错误均拒绝，明确 manifest 不存在时允许。未使用真实 GHCR 凭据或执行推送。
 - 本轮 macOS 真实 Mihomo 回归 37 项通过（1.93 秒），UI DOM 模拟、JS 语法及发布边界检查通过。
 - 同一发布复核者针对复核确认原四项问题已闭合；另提出推送成功但附件上传失败后的恢复窗口，已补充同提交既有镜像只读摘要与源码 revision 核验、跳过构建并补传附件。再次针对复核确认此窗口无残留问题。发布文件独立复核与本地剩余视觉收尾均已完成。
+
+## 首次公开发布验收
+
+- 用户授权后创建公开仓库 https://github.com/youjiaxing/proxy-egress-manager ，发布源码提交 `a3b35e97ab8decc45bcf916724154cfd94dfe8c4`。
+- 原生 CI https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42215486669 ：amd64 37 项通过（4.15 秒）、arm64 37 项通过（4.25 秒），均完成镜像构建与实际 Compose 健康检查。
+- Release https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.1.0 ，发布工作流 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42215650003 成功，再次执行两架构 CI 后构建推送；`deployment-reference.txt` 已附在 Release。
+- 多架构镜像：`ghcr.io/youjiaxing/proxy-egress-manager:v0.1.0@sha256:e4d5423e856c3fd918e9fe6c37c373ac8b9d19c06a440c68f6fb4bf5ff59325a`。
+- 通过空 Docker CLI 配置、不登录 GHCR 的客户端读取 manifest 并拉取：索引及 amd64 镜像实际下载成功。两个架构 revision 均匹配发布提交，运行 UID 均为 10001；Release 附件摘要与注册表一致，构建来源与 SBOM 信息均包含两架构。
+- amd64 manifest：`sha256:6145da5e99c310a8108acba07ce41dd18c06570aeccd71005d1663aa85524951`；arm64 manifest：`sha256:b9641902c616e474520cbfe42e0bcd817e6f2e1947d24f2efe95b3fc4adf5d55`。
+- 下载后的实际发布镜像再次运行完整 fixture 测试：arm64 37 项通过（4.58 秒），amd64 37 项通过（7.90 秒，本机转译）。固定索引镜像的隔离 Compose 启动与健康检查通过，退出清理全部测试容器、网络、数据卷。
+- GitHub CLI 的现有令牌没有 read:packages scope，因此包元数据 API 返回 403；未申请额外权限，公开可用性由实际匿名拉取验证。未部署远程服务器或接入真实订阅。

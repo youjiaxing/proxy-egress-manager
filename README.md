@@ -2,7 +2,7 @@
 
 用于 Docker 共享网络的 SOCKS5 出口分组工具。每组使用固定入口、独立验证的美国出口；正常保持，持续故障自动寻找独立备用，没有备用则暂停。支持 TCP CONNECT 和 UDP ASSOCIATE、网页管理、多订阅、钉住、备份恢复和 webhook 告警。
 
-**状态：本地部署验收通过，尚未发布镜像或部署到真实 VPS。** Linux arm64 与 amd64 镜像已构建并运行测试（amd64 为 Docker Desktop 转译）；详细范围见 [验证记录](docs/verification.md)。真实订阅的独立美国出口数量、公共身份服务可靠性及 1Panel 联调仍需现场验证。不得仅凭节点名称或 `udp: true` 放行。
+**状态：v0.1.0 已公开发布，尚未部署到真实 VPS。** 原生 Linux arm64 / amd64 远程 CI、镜像构建与 Compose 启动均通过；详细范围见 [验证记录](docs/verification.md)。真实订阅的独立美国出口数量、公共身份服务可靠性及 1Panel 联调仍需现场验证。不得仅凭节点名称或 `udp: true` 放行。
 
 ## 组件
 
@@ -24,7 +24,13 @@ socks5://proxy-egress-manager:1082
 
 完整步骤：[1Panel 部署](docs/deployment.md)、[升级与恢复](docs/operations.md)、[安全与保证范围](docs/security.md)、[设计与协议](docs/architecture.md)。
 
-镜像方案：`ghcr.io/<你的账号或组织>/proxy-egress-manager:vX.Y.Z@sha256:...`。**这是发布路径约定，不是已存在的镜像。** 未发布时可使用 `docker compose -f compose.yaml -f compose.build.yaml build` 显式本地构建；生产配置本身不构建源码，Mihomo 仍需获取固定上游镜像。
+公开源码：[GitHub](https://github.com/youjiaxing/proxy-egress-manager)，首版：[v0.1.0](https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.1.0)。GHCR 镜像已验证匿名拉取，设置 `PEM_IMAGE` 为：
+
+```text
+ghcr.io/youjiaxing/proxy-egress-manager:v0.1.0@sha256:e4d5423e856c3fd918e9fe6c37c373ac8b9d19c06a440c68f6fb4bf5ff59325a
+```
+
+优先部署固定版本与摘要。自行构建时使用 `docker compose -f compose.yaml -f compose.build.yaml build`；生产配置本身不构建源码，Mihomo 仍使用 Compose 中的固定上游摘要。
 
 复制 `.env.example` 到 `.env`，设置独有秘密、HTTPS origin、已有业务 network 和镜像引用。示例没有默认密码。不要将真实 `.env`、数据卷或备份加入 Git。
 
@@ -54,6 +60,6 @@ MIHOMO_BIN=/path/to/mihomo .venv/bin/python -m pytest -q
 
 源码与项目镜像默认公开，自编代码 MIT。上游和第三方依赖保留其独立许可；见 [第三方说明](docs/third-party.md)。GitHub Actions 在显式发布稳定 `vX.Y.Z` release 后运行测试并推送 GHCR，普通提交仅测试，**不会升级服务器**。首次发布、包的公开可见性与账号归属需要仓库所有者配置并核验，项目不会自行创建远程仓库。
 
-首个候选版本为 `v0.1.0`，发布检查顺序及交付内容见 [首次发布准备](docs/release.md)。
+首个公开版本为 `v0.1.0`，发布检查顺序及交付内容见 [首次发布准备](docs/release.md)。
 
 系统不是静态 IP 服务，不保证所有网站同出口、全地址族隔离或绝不风控。隔离只覆盖配置验证目标实际观测的出口，其他目的地/地址族明确未知。业务主动直连或代理失败回退直连不在本工具控制内。
