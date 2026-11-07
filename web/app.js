@@ -22,10 +22,11 @@ async function authenticated() { $('login').hidden = true; $('dashboard').hidden
 async function action(kind, data = {}) {
   const key = [kind, data.group || '', data.slot || '', data.node || ''].join(':');
   if ([...operations.values()].some(o=>o.key===key && o.running)) { message('该操作正在处理，请查看操作进度'); return; }
-  const operation = {key, title:operationNames[kind] || '管理操作', started:Date.now(), running:true, detail:'正在提交…', session:operationSession};
+  const operation = {key, groupUid:state?.groups.find(g=>g.id===data.group)?.uid, title:operationNames[kind] || '管理操作', started:Date.now(), running:true, detail:'正在提交…', session:operationSession};
   operations.set(operation, operation); renderOperations();
   try {
-    const {job} = await api('/api/action', {kind,...data});
+    const {job,cancellable} = await api('/api/action', {kind,...data,...(operation.groupUid?{group_uid:operation.groupUid}:{})});
+    if(cancellable){operation.cancelJob=job;operation.cancelLabel='停止查找';}
     if (operation.session !== operationSession) return;
     await waitForJob(job, operation);
   } catch (error) {
@@ -36,8 +37,9 @@ async function action(kind, data = {}) {
 function renderOperations() {
   const items=[...operations.values()];
   $('operations').hidden=!items.length;
-  $('operation-list').innerHTML=items.map(o=>`<li><strong>${esc(o.title)}</strong><span>${esc(o.detail)}</span>${o.running?`<small>已等待 ${Math.floor((Date.now()-o.started)/1000)} 秒</small>${o.cancelJob?`<button class="quiet" data-cancel-test="${esc(o.cancelJob)}">取消测试</button>`:''}`:''}</li>`).join('');
+  $('operation-list').innerHTML=items.map(o=>`<li><strong>${esc(o.title)}</strong><span>${esc(o.detail)}</span>${o.running?`<small>已等待 ${Math.floor((Date.now()-o.started)/1000)} 秒</small>${o.cancelJob?`<button class="quiet" data-cancel-test="${esc(o.cancelJob)}">${esc(o.cancelLabel||'取消测试')}</button>`:''}`:''}</li>`).join('');
   $('add-source').disabled=items.some(o=>o.running && o.key?.startsWith('source_add:'));
+  if(state&&!$('dashboard').hidden)renderGroups();
 }
 async function waitForJob(job, operation) {
   operation ||= {title:'恢复备份', started:Date.now(), running:true, session:operationSession};
@@ -58,12 +60,13 @@ async function waitForJob(job, operation) {
     if (operation.session !== operationSession) return;
     if (result.status !== 'running') {
       operation.running=false;
-      operation.detail=result.status==='error'?'失败：'+result.message:'处理完成。';
+      operation.result=result.result;
+      operation.detail=result.status==='error'?'失败：'+result.message:result.result?.message||'处理完成。';
       if(result.result?.length) {operation.detail+=' 已完成 '+result.result.length+' 个节点，详情见节点连接质量。';}
       if(operation.diagnostic && qualityContext) await renderQuality();
       try {
         await refresh();
-        if (result.status==='done' && operation.key?.startsWith('group_')) {
+        if (result.status==='done' && !result.result?.message && operation.key?.startsWith('group_')) {
           const group=state.groups.find(g=>g.id===operation.key.split(':')[1]);
           if(group) operation.detail='处理完成：'+(group.lease_valid?'可用':'暂不可用')+'；'+groupReason(group.reason);
         }
@@ -71,7 +74,7 @@ async function waitForJob(job, operation) {
       if (operation.session !== operationSession) return;
       renderOperations(); return;
     }
-    operation.detail=operation.diagnostic&&result.message&&result.message!=='操作已排队'?result.message:'排队或处理中；节点检测可能需要数分钟，请勿重复提交。'; renderOperations();
+    operation.detail=result.message&&result.message!=='操作已排队'&&result.message!=='操作已完成'?result.message:'排队或处理中；节点检测可能需要数分钟，请勿重复提交。'; renderOperations();
   }
 }
 async function refresh() {
@@ -131,6 +134,18 @@ function groupReason(reason) {
   };
   return meanings[reason] || reason;
 }
+function groupFeedback(g){
+  const newest=[...operations.values()].filter(o=>o.key?.split(':')[1]===g.id&&o.key?.startsWith('group_')&&(!o.groupUid||o.groupUid===g.uid)).at(-1);
+  const local=newest&&(newest.running||!g.last_action||newest.started>g.last_action.finished*1000)?newest:null;
+  const progress=g.selection_progress;
+  const running=local?.running||progress;
+  const result=local?.result||g.last_action;
+  const attempts=progress?.attempts||result?.selection?.attempts||[];
+  if(!running&&!result&&!local)return '';
+  const title=running?'正在处理本组操作':result?.outcome==='applied'||result?.outcome==='saved_available'?'已生效':result?.outcome?.startsWith('saved')?'清单已保存':result?.outcome==='not_applied'?'未应用新节点':'上次操作结果';
+  const detail=running?(progress?`${progress.stage}：${progress.current||progress.requested} · 已检查 ${progress.checked}/${progress.total} 个候选（本次最多 ${progress.limit} 个）`:local.detail):(local?.detail||result.message);
+  return `<section class="group-feedback ${running?'is-running':''}" aria-live="polite"><div class="section-title"><strong>${esc(title)}</strong>${!running&&result?.finished?`<small>${date(result.finished)}</small>`:''}</div><p>${esc(detail)}</p>${running&&progress?`<progress value="${progress.checked}" max="${Math.max(progress.limit,1)}" aria-label="已检查候选数"></progress><button class="quiet" data-stop-search="${esc(g.uid)}">停止查找</button>`:''}${attempts.length?`<details ${running?'open':''}><summary>查看已检查的 ${attempts.length} 个节点及结果</summary><ul>${attempts.map(a=>`<li><strong>${esc(a.name)}</strong><br>${esc(a.reason)}</li>`).join('')}</ul></details>`:''}</section>`;
+}
 function renderGroups() {
   const markup = state.groups.map(g => {
     const n = state.nodes[g.node], source = n && state.sources.find(s=>s.slot===n.source);
@@ -148,8 +163,8 @@ function renderGroups() {
     ].join('');
     const scopeText = describeScope(g);
     const retryText = g.next_retry_at>Date.now()/1000 ? `下次恢复检查：${date(g.next_retry_at)}，等待期间不重复探测` : '';
-    if(layout==='table') return `<tr><td><strong>${esc(g.name)}</strong><br><span class="badge ${g.lease_valid?'active':'paused'}">${status}</span><br>${esc(n?.name||'无合格节点')}<br><small>${esc(g.endpoint)}</small></td><td>${esc(scopeText)}<br><small>${g.candidate_count??0} 个有效候选</small></td><td>TCP ${esc(g.tcp_ips.join(', ')||'尚未验证')}<br>UDP ${esc(g.udp_ips.join(', ')||'尚未验证')}<p>${esc(groupReason(g.reason))}</p><small>${esc(retryText)}</small></td><td><div class="table-actions">${buttons}</div></td></tr>`;
-    return `<article><div class="section-title"><h2>${esc(g.name)}</h2><span class="badge ${g.lease_valid?'active':'paused'}">${status}</span></div><p class="endpoint-label">业务中填写的代理地址</p><div class="endpoint">socks5://${esc(g.endpoint)}</div><dl class="details"><dt>当前节点 / 订阅</dt><dd>${esc(n?.name || '尚未找到合格节点')} / ${esc(source?.name || '—')}</dd><dt>出口地址（TCP）</dt><dd>${esc(g.tcp_ips.join(', ')||'尚未验证')}</dd><dt>出口地址（UDP）</dt><dd>${esc(g.udp_ips.join(', ')||'尚未验证')}</dd><dt>上次验证时间</dt><dd>${date(g.verified_at)}</dd><dt>当前选择已保持</dt><dd>${g.since?Math.floor((Date.now()/1000-g.since)/60)+' 分钟':'—'}</dd><dt>允许使用范围</dt><dd>${esc(scopeText)} · ${g.candidate_count??0} 个有效候选</dd><dt>自动更换节点</dt><dd>${g.pinned ? (g.pin_until?'已关闭，至 '+date(g.pin_until):'已关闭，需手动允许'):'已允许，正常时保持当前节点'}</dd></dl><div class="actions">${buttons}</div><p class="reason">当前情况：${esc(groupReason(g.reason))}<br>${esc(retryText)}</p></article>`;
+    if(layout==='table') return `<tr><td><strong>${esc(g.name)}</strong><br><span class="badge ${g.lease_valid?'active':'paused'}">${status}</span><br>${esc(n?.name||'无合格节点')}<br><small>${esc(g.endpoint)}</small></td><td>${esc(scopeText)}<br><small>${g.candidate_count??0} 个有效候选</small></td><td>TCP ${esc(g.tcp_ips.join(', ')||'尚未验证')}<br>UDP ${esc(g.udp_ips.join(', ')||'尚未验证')}<p>${esc(groupReason(g.reason))}</p><small>${esc(retryText)}</small>${groupFeedback(g)}</td><td><div class="table-actions">${buttons}</div></td></tr>`;
+    return `<article><div class="section-title"><h2>${esc(g.name)}</h2><span class="badge ${g.lease_valid?'active':'paused'}">${status}</span></div><p class="endpoint-label">业务中填写的代理地址</p><div class="endpoint">socks5://${esc(g.endpoint)}</div><dl class="details"><dt>当前节点 / 订阅</dt><dd>${esc(n?.name || '尚未找到合格节点')} / ${esc(source?.name || '—')}</dd><dt>出口地址（TCP）</dt><dd>${esc(g.tcp_ips.join(', ')||'尚未验证')}</dd><dt>出口地址（UDP）</dt><dd>${esc(g.udp_ips.join(', ')||'尚未验证')}</dd><dt>上次验证时间</dt><dd>${date(g.verified_at)}</dd><dt>当前选择已保持</dt><dd>${g.since?Math.floor((Date.now()/1000-g.since)/60)+' 分钟':'—'}</dd><dt>允许使用范围</dt><dd>${esc(scopeText)} · ${g.candidate_count??0} 个有效候选</dd><dt>自动更换节点</dt><dd>${g.pinned ? (g.pin_until?'已关闭，至 '+date(g.pin_until):'已关闭，需手动允许'):'已允许，正常时保持当前节点'}</dd></dl>${groupFeedback(g)}<div class="actions">${buttons}</div><p class="reason">当前情况：${esc(groupReason(g.reason))}<br>${esc(retryText)}</p></article>`;
   }).join('') || '<p class="empty">尚无分组，创建后会验证可用节点。</p>';
   // Unchanged polling results should not interrupt reading a tooltip or keyboard navigation.
   if(markup===renderGroups.previous) return;
@@ -230,7 +245,8 @@ document.addEventListener('click',guarded(async e=>{
   if(b.dataset.scope)openScope(b.dataset.scope);
   if(b.dataset.qualityGroup)openQuality({group:b.dataset.qualityGroup});
   if(b.dataset.qualityNode)openQuality({node:b.dataset.qualityNode});
-  if(b.dataset.cancelTest)await api('/api/jobs/'+b.dataset.cancelTest+'/cancel',{});
+  if(b.dataset.cancelTest){await api('/api/jobs/'+b.dataset.cancelTest+'/cancel',{});message('已请求停止，将在当前检查结束后停止。');}
+  if(b.dataset.stopSearch){await api('/api/groups/'+b.dataset.stopSearch+'/selection/cancel',{});message('已请求停止，将在当前检查结束后停止。');}
   if(b.dataset.action) await action(b.dataset.action,{group:b.dataset.group});
   if(b.dataset.pin) {
     const g=state.groups.find(g=>g.id===b.dataset.pin);
@@ -242,7 +258,7 @@ document.addEventListener('click',guarded(async e=>{
     const id=b.dataset.switch, g=state.groups.find(g=>g.id===id);
     if(g.paused) {message('请先点击“启用分组”，再更换节点。');return;}
     if(g.pinned) {message('请先点击“允许自动换节点”，再更换节点。');return;}
-    formDialog('更换代理节点','<label>选择代理节点<select name="node"><option value="">系统自动选择（推荐）</option>'+Object.values(state.nodes).filter(n=>!n.disabled&&(!g.candidate_refs||g.candidate_refs.includes(n.ref))).map(n=>`<option value="${esc(n.id)}">${esc(n.name)} · 订阅 ${n.source}</option>`).join('')+'</select></label><p class="muted">系统会检查美国归属、TCP / UDP 连接和与其他组出口是否重复，验证通过后才使用。切换会断开已有连接；若没有合格节点，该组可能仍不可用。</p>',v=>action('group_switch',{group:id,node:v.node||null}),'开始选择并验证');
+    formDialog('更换代理节点','<label>选择代理节点<select name="node"><option value="">自动查找合格节点（推荐）</option>'+Object.values(state.nodes).filter(n=>!n.disabled&&(!g.candidate_refs||g.candidate_refs.includes(n.ref))).map(n=>`<option value="${esc(n.id)}">${esc(n.name)} · 订阅 ${n.source}</option>`).join('')+'</select></label><p class="muted">自动查找会连续分批检查允许范围，优先检查名称标注美国的节点，找到合格独立出口即停止，单次最多 100 个。指定节点只验证所选的一个。查找进度和失败原因显示在本组卡片，可随时请求停止。验证通过后才应用；成功切换会断开已有连接。选择节点不会修改可用清单。</p>',v=>action('group_switch',{group:id,node:v.node||null}),'开始选择并验证');
   }
   if(b.dataset.deleteGroup && confirm('删除这个代理入口并断开已有连接？使用此地址的业务需要重新配置，订阅不会删除。')) await action('group_delete',{group:b.dataset.deleteGroup});
   if(b.dataset.sourceEdit) {

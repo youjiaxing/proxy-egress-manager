@@ -130,6 +130,9 @@ class Store:
         # Disk identity is an observation, never a surviving data-plane authorization.
         for group in self.state["groups"]:
             group.update(status="paused", reason="启动后等待重验", failure_since=None)
+            last=group.get('last_action')
+            if last and last.get('outcome') in ('checking','saved_pending'):
+                last.update(outcome='interrupted',message='服务重启，上次节点查找未完成；请查看当前状态后重新开始',finished=time.time())
         self.save()
         os.chmod(self.path, 0o600)
 

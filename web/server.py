@@ -52,6 +52,7 @@ class Management:
             web.post("/api/backup", self.backup), web.post("/api/restore", self.restore),
             web.get("/api/diagnostics", self.diagnostics),
             web.get('/api/traffic', self.traffic), web.get('/api/quality', self.quality), web.get('/api/quality/export', self.quality_export),
+            web.post('/api/groups/{uid}/selection/cancel', self.cancel_selection),
             web.post('/api/tests', self.tests), web.post('/api/jobs/{job}/cancel', self.cancel_job),
         ])
         self.app.on_cleanup.append(self.cleanup)
@@ -177,7 +178,20 @@ class Management:
     async def action(self, request):
         data = await request.json()
         kind = data.pop("kind")
-        return self.submit(self.controller.action(kind, data))
+        cancellable = kind in ('group_switch','group_retry','group_scope')
+        cancel = asyncio.Event() if cancellable else None
+        holder = []
+        def progress(message):
+            if holder:
+                self.jobs[holder[0]]['message'] = message
+        response = self.submit(self.controller.action(kind, data, cancel, progress))
+        if cancellable:
+            job=json.loads(response.text)['job']
+            holder.append(job)
+            if not hasattr(self,'search_jobs'): self.search_jobs = {}
+            self.search_jobs[job]=cancel
+            response = web.json_response({'job':job,'cancellable':True},status=202)
+        return response
 
     def submit(self, coroutine):
         active = sum(j["status"] == "running" for j in self.jobs.values())
@@ -204,6 +218,7 @@ class Management:
                     break
                 self.jobs.pop(oldest)
                 getattr(self, "test_jobs", set()).discard(oldest)
+                getattr(self, "search_jobs", {}).pop(oldest,None)
         task = asyncio.create_task(execute())
         self.job_by_id[identity] = task
         self.job_tasks.add(task)
@@ -233,11 +248,22 @@ class Management:
     async def cancel_job(self, request):
         task = self.job_by_id.get(request.match_info['job'])
         if task is None: raise web.HTTPNotFound()
+        event = getattr(self,'search_jobs',{}).get(request.match_info['job'])
+        if event is not None:
+            event.set()
+            return web.json_response({'ok':True,'message':'已请求停止，将在当前检查结束后停止查找'})
         # Only diagnostic jobs expose a cancellation control in the UI. Do not interrupt state transactions.
         if not request.match_info['job'] in getattr(self, 'test_jobs', set()):
             raise web.HTTPForbidden(text='此操作不能取消')
         self.cancelled_by_user.add(request.match_info['job'])
         if not task.cancelling(): task.cancel()
+        return web.json_response({'ok':True})
+
+    async def cancel_selection(self, request):
+        event=self.controller.selection_cancellations.get(request.match_info['uid'])
+        if event is None:
+            raise web.HTTPNotFound(text='本组当前没有正在进行的节点查找')
+        event.set()
         return web.json_response({'ok':True})
 
     async def traffic(self, request):

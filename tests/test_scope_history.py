@@ -159,3 +159,113 @@ async def test_failed_scope_save_retains_allowed_current_session(controller,monk
         await c.action('group_scope',{'group':'1','scope':{'mode':'nodes','ids':[node_ref(c.state,c.state['nodes']['a'])]}})
     assert g['scope']==before and c.gateway.leases['1'].generation==generation
     assert c.gateway.allowed('1',generation)
+
+
+@pytest.mark.asyncio
+async def test_changed_scope_without_current_node_checks_immediately_despite_backoff(controller):
+    c=controller;g=c.group('1');g['node']=None
+    g.update(next_retry_at=time.time()+900,retry_step=3)
+    ref=node_ref(c.state,c.state['nodes']['c'])
+    result=await c.action('group_scope',{'group':'1','scope':{'mode':'nodes','ids':[ref]}})
+    assert g['node']=='c' and g['status']=='active'
+    assert result['outcome']=='saved_available'
+    assert g['last_action']['kind']=='group_scope'
+
+
+@pytest.mark.asyncio
+async def test_switch_failed_verification_has_persistent_explicit_outcome(controller):
+    c=controller;g=c.group('1');g['node']=None
+    c.prober.results['c']=Observation(True,True,{'9.9.9.9'},{'9.9.9.9'},{'9.9.9.9':'US'},identity_complete=False,identity_errors=['stun.test:3478'],reason='部分出口验证目标未返回有效结果：stun.test:3478')
+    result=await c.action('group_switch',{'group':'1','node':'c'})
+    assert g['node'] is None
+    assert result['outcome']=='not_applied'
+    assert result['selection']['requested']=='c'
+    assert result['selection']['attempts'][0]['identity_errors']==['stun.test:3478']
+    saved=json.loads(c.store.db.execute('select body from state where id=1').fetchone()[0])
+    assert saved['groups'][0]['last_action']['outcome']=='not_applied'
+    assert c.public()['groups'][0]['selection_progress'] is None
+
+
+@pytest.mark.asyncio
+async def test_manual_auto_search_continues_past_three_and_yields_to_scheduler(controller):
+    c=controller;await c.tick();g=c.group('2');g['node']=None
+    # Four candidates fail, a fifth works. The active other group still gets a scheduled check.
+    for name in ('d','e'):
+        c.state['nodes'][name]={**c.state['nodes']['c'],'id':name,'name':name}
+    from test_controller import good
+    c.prober.results.update(d=Observation(False,False),e=good('4.4.4.4'))
+    c.prober.results.update(b=Observation(False,False),c=Observation(False,False))
+    original=c.prober.observe; scheduled=[];order=[]
+    async def scheduler():
+        async with c.lock:
+            await c.tick()
+        order.append('scheduler')
+    async def probe(upstream,settings):
+        if upstream[1]==20000:
+            order.append(c.core.selected[0])
+            if len(order)==1:
+                scheduled.append(asyncio.create_task(scheduler()))
+                await asyncio.sleep(0)
+        return await original(upstream,settings)
+    c.prober.observe=probe
+    result=await c.action('group_switch',{'group':'2'})
+    await asyncio.gather(*scheduled)
+    assert result['outcome']=='applied' and g['node']=='e'
+    assert result['selection']['checked']==5
+    assert order.index('scheduler') < order.index('b')
+    assert c.group('1')['status']=='active'
+    assert not c.selection_progress
+
+
+@pytest.mark.asyncio
+async def test_search_cancel_is_cooperative_and_never_applies_current_candidate(controller):
+    c=controller;g=c.group('1');g['node']=None;cancel=asyncio.Event()
+    original=c.prober.observe
+    async def probe(*args):
+        cancel.set()
+        return await original(*args)
+    c.prober.observe=probe
+    result=await c.action('group_switch',{'group':'1','node':'c'},cancel=cancel)
+    assert result['outcome']=='cancelled' and g['node'] is None
+    assert result['selection']['checked']==1 and not c.selection_progress
+
+
+@pytest.mark.asyncio
+async def test_failed_manual_selection_preserves_working_current_node(controller):
+    c=controller;await c.tick();g=c.group('1');before=c.gateway.leases['1'].generation
+    c.prober.results['c']=Observation(False,False)
+    result=await c.action('group_switch',{'group':'1','node':'c'})
+    assert result['outcome']=='not_applied'
+    assert g['node']=='a' and c.gateway.allowed('1',before)
+
+
+@pytest.mark.asyncio
+async def test_manual_search_stops_when_configuration_changes_between_candidates(controller):
+    c=controller;g=c.group('1');g['node']=None
+    c.prober.results={n:Observation(False,False) for n in ('a','b','c')}
+    pending=[];original=c.prober.observe
+    async def edit():
+        async with c.lock:c.state['settings']['probe_timeout']=9
+    async def probe(*args):
+        pending.append(asyncio.create_task(edit()))
+        await asyncio.sleep(0)
+        return await original(*args)
+    c.prober.observe=probe
+    result=await c.action('group_switch',{'group':'1'})
+    await asyncio.gather(*pending)
+    assert result['outcome']=='interrupted'
+    assert result['selection']['checked']==1 and g['node'] is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_business_revalidation_never_grants_candidate(controller):
+    c=controller;g=c.group('1');g['node']=None;cancel=asyncio.Event()
+    original=c.prober.observe
+    async def probe(upstream,settings):
+        result=await original(upstream,settings)
+        if upstream[1]==20001:cancel.set()
+        return result
+    c.prober.observe=probe
+    result=await c.action('group_switch',{'group':'1','node':'c'},cancel=cancel)
+    assert result['outcome']=='cancelled' and g['node'] is None
+    assert not c.gateway.allowed('1',c.gateway.leases['1'].generation)

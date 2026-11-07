@@ -52,7 +52,7 @@ async function until(fn){for(let i=0;i<150;i++){if(fn())return;await pause();}th
  d.querySelector('[name=confirm_disconnect]').checked=true;
  d.getElementById('dialog-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
  await until(()=>posts.some(p=>p.body.kind==='group_scope'));
- assert.deepEqual(posts.find(p=>p.body.kind==='group_scope').body,{kind:'group_scope',group:'1',scope:{mode:'sources',ids:['t']},confirm_disconnect:true});
+ assert.deepEqual(posts.find(p=>p.body.kind==='group_scope').body,{kind:'group_scope',group:'1',group_uid:'g1',scope:{mode:'sources',ids:['t']},confirm_disconnect:true});
  d.getElementById('logout').click();await until(()=>d.getElementById('dashboard').hidden);
  assert.equal(d.getElementById('quality-dialog').open,false);
  dom.window.close();console.log('PASS quality UI: exact source filter, remembered table layout, independent UDP request, missing data, scope checkbox arrays, disconnect consent, logout cleanup');

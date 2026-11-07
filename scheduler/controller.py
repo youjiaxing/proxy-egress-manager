@@ -25,6 +25,8 @@ class Controller:
         self.tasks = []
         self.running = False
         self.candidate_cursor = {}
+        self.selection_progress = {}
+        self.selection_cancellations = {}
         self.core_error = None
         self.maintenance = marker_path(store.directory).exists()
         self.history = None
@@ -168,7 +170,7 @@ class Controller:
             self.state["nodes"][node]["last_probe"] = data
         return result
 
-    async def accept(self, group, node, observation, revalidate=False):
+    async def accept(self, group, node, observation, revalidate=False, cancel=None):
         addresses = observation.tcp_ips | observation.udp_ips
         if not eligible(self.state, group, self.state["nodes"][node]) or not observation.us or addresses & self.occupied(group["id"]):
             return False
@@ -183,6 +185,8 @@ class Controller:
             if not verified.us or (verified.tcp_ips | verified.udp_ips) & self.occupied(group["id"]):
                 return False
             observation = verified
+        if cancel is not None and cancel.is_set():
+            return False
         observed_at = observation.observed_at if observation.observed_at is not None else self.clock()
         deadline = observed_at + self.state["settings"]["identity_ttl"]
         if self.clock() >= deadline:
@@ -266,6 +270,15 @@ class Controller:
             if group["pin_until"] and self.wall() >= group["pin_until"]:
                 group.update(pinned=False, pin_until=None)
                 self.store.save()
+            if group["uid"] in self.selection_progress:
+                node=self.state['nodes'].get(group['node'])
+                if node and group['status']=='active' and eligible(self.state,group,node):
+                    result=await self.observe(group,node['id'])
+                    if result.us:
+                        await self.accept(group,node['id'],result)
+                    elif self.clock() >= self.identities.get(group['id'],0):
+                        await self.pause(group,'出口身份到期；继续独立连通探测')
+                continue
             if group["paused"]:
                 await self.pause(group, "手动暂停")
                 continue
@@ -303,7 +316,7 @@ class Controller:
         for identity in collisions:
             await self.pause(self.group(identity), "组间出口冲突，等待串行重验")
         for group in groups:
-            if group["paused"] or self.wall() < group.get("next_retry_at", 0):
+            if group["uid"] in self.selection_progress or group["paused"] or self.wall() < group.get("next_retry_at", 0):
                 continue
             result = observations.get(group["id"])
             needs_backup = result is None or group["id"] in collisions
@@ -399,7 +412,140 @@ class Controller:
         except Exception:
             pass  # The edit is already committed; an audit-write error cannot claim rollback.
 
-    async def action(self, kind, data):
+    def group_outcome(self, group, kind, outcome, message, selection=None):
+        result = {'kind':kind, 'group':group['id'], 'group_uid':group['uid'], 'outcome':outcome,
+                  'message':message, 'finished':self.wall()}
+        if selection is not None:
+            result['selection'] = copy.deepcopy(selection)
+        group['last_action'] = result
+        self.store.save()
+        return copy.deepcopy(result)
+
+    async def manual_search(self, kind, data, cancel=None, progress=None, scope_saved=False):
+        """One candidate per lock acquisition; scheduled lease validation can run between candidates."""
+        cancel = cancel or asyncio.Event()
+        async with self.lock:
+            if self.maintenance:
+                raise ValueError('维护期间不能选择节点')
+            group = self.group(data['group'])
+            uid = group['uid']
+            if data.get('group_uid',uid)!=uid:
+                raise ValueError('分组已被删除或重建，请刷新后重新操作')
+            if uid in self.selection_progress:
+                raise ValueError('此分组正在查找节点，请等待或先停止查找')
+            if group['paused'] or group['pinned']:
+                if scope_saved:
+                    return self.group_outcome(group,kind,'saved_interrupted','可用节点清单已保存；分组已暂停或固定，未启动自动查找')
+                raise ValueError('请先启用分组并允许自动换节点')
+            explicit = data.get('node')
+            if explicit and (explicit not in self.state['nodes'] or not eligible(self.state,group,self.state['nodes'][explicit])):
+                raise ValueError('所选节点不在本组允许范围内，或节点/订阅已停用')
+            nodes = [n for n in self.state['nodes'].values() if eligible(self.state,group,n)]
+            nodes.sort(key=lambda n:(not n['hint_us'],n['priority'],n['id']))
+            if explicit:
+                nodes = [self.state['nodes'][explicit]]
+            refs = [(n['id'],node_ref(self.state,n)) for n in nodes[:100]]
+            scope, settings, epoch = copy.deepcopy(group['scope']), copy.deepcopy(self.state['settings']), self.history_epoch
+            selection = {'kind':kind,'requested':self.state['nodes'][explicit]['name'] if explicit else '自动选择',
+                         'total':len(nodes),'us_hint_count':sum(bool(n['hint_us']) for n in nodes),'limit':len(refs),'checked':0,'attempts':[],
+                         'started':self.wall(),'current':None,'stage':'开始查找'}
+            self.group_outcome(group,kind,'checking',('可用清单已保存；' if scope_saved else '')+'正在查找并验证节点',selection)
+            self.selection_progress[uid] = selection
+            self.selection_cancellations[uid] = cancel
+        outcome, message = 'not_applied', '未找到通过全部验证且与其他分组出口不重复的节点'
+        try:
+            for index,(node_id,ref) in enumerate(refs):
+                async with self.lock:
+                    current = next((g for g in self.state['groups'] if g['uid']==uid),None)
+                    node = self.state['nodes'].get(node_id)
+                    if cancel.is_set():
+                        outcome,message='cancelled','已停止查找；已完成的检查结果保留'
+                        break
+                    if (self.maintenance or current is None or current['paused'] or current['pinned'] or
+                            current['scope']!=scope or self.state['settings']!=settings or self.history_epoch!=epoch or
+                            not node or node_ref(self.state,node)!=ref or not eligible(self.state,current,node)):
+                        outcome,message='interrupted','分组、订阅或检测配置已变化，已停止本次查找；请按新配置重新开始'
+                        break
+                    group = current
+                    selection.update(current=node['name'],stage='正在验证',index=index+1)
+                    if progress:progress(f"正在验证 {index+1}/{len(refs)}：{node['name']}；已检查 {selection['checked']} 个")
+                    result = await self.observe(group,node_id,candidate=True)
+                    conflict = bool((result.tcp_ips|result.udp_ips)&self.occupied(group['id']))
+                    reason = '出口与其他分组重复，不能作为独立出口' if conflict else result.reason
+                    attempt = {'node_ref':ref,'name':node['name'],'reason':reason,
+                               'tcp_ok':result.tcp_ok,'udp_ok':result.udp_ok,'identity_errors':result.identity_errors,
+                               'country_errors':result.country_errors,'conflict':conflict,'applied':False}
+                    selection['attempts'].append(attempt);selection['checked']+=1
+                    if cancel.is_set():
+                        outcome,message='cancelled','已停止查找；本次检查结束，未应用该候选'
+                        break
+                    if result.us and not conflict:
+                        selection['stage']='正在复验业务入口'
+                        if progress:progress(f"{node['name']} 候选验证通过，正在复验业务入口")
+                        if await self.accept(group,node_id,result,revalidate=True,cancel=cancel):
+                            attempt.update(applied=True,reason='已通过完整验证并应用')
+                            outcome,message='applied',f"已应用节点：{node['name']}；业务入口可用"
+                            break
+                        if cancel.is_set():
+                            outcome,message='cancelled','已停止查找，未提交候选节点'
+                            break
+                        attempt['reason']=(node.get('last_probe') or {}).get('reason','业务入口复验未通过')
+                    self.store.save()
+                # Yield after each bounded candidate; a pending scheduler or edit gets its lock turn.
+                await asyncio.sleep(0)
+            async with self.lock:
+                current=next((g for g in self.state['groups'] if g['uid']==uid),None)
+                if current is None:
+                    return {'kind':kind,'outcome':'interrupted','message':'分组已删除，本次查找已停止'}
+                if (current['paused'] or current['pinned'] or current['scope']!=scope or self.state['settings']!=settings or self.history_epoch!=epoch):
+                    outcome,message='interrupted','分组或检测配置已变化，按当前配置生效；本次查找已停止'
+                if outcome=='applied':
+                    lease=self.gateway.leases.get(current['id'])
+                    if not (lease and self.gateway.allowed(current['id'],lease.generation)):
+                        outcome,message='interrupted','候选验证后授权状态已变化，请查看当前分组状态'
+                elif cancel.is_set() and outcome=='not_applied':
+                    outcome,message='cancelled','已停止查找；未应用新的候选节点'
+                selection.update(current=None,stage='已结束',finished=self.wall())
+                if outcome=='not_applied':
+                    if selection['checked'] < selection['total']:
+                        message += f"；本次检查 {selection['checked']}/{selection['total']} 个，达到单次100个上限，未检查完全部范围"
+                    else:
+                        message += f"；已检查全部 {selection['checked']} 个候选"
+                    lease=self.gateway.leases.get(current['id'])
+                    available=bool(lease and self.gateway.allowed(current['id'],lease.generation))
+                    if available:
+                        message += '；未更换，继续使用原节点'
+                    else:
+                        detail=selection['attempts'][-1]['reason'] if selection['attempts'] else '允许范围内没有启用的候选节点'
+                        await self.pause(current,message+'；最近候选：'+detail)
+                        step=min(current.get('retry_step',0),2)
+                        current.update(retry_step=min(step+1,3),next_retry_at=self.wall()+(60,300,900)[step])
+                if scope_saved:
+                    outcome='saved_available' if outcome=='applied' else 'saved_'+outcome
+                    message='可用节点清单已保存；'+message
+                result=self.group_outcome(current,kind,outcome,message,selection)
+                self.event('operation',message,current['id'])
+                return result
+        except Exception:
+            async with self.lock:
+                current=next((g for g in self.state['groups'] if g['uid']==uid),None)
+                if current is None:
+                    raise
+                selection.update(current=None,stage='已结束',finished=self.wall())
+                return self.group_outcome(current,kind,'saved_error' if scope_saved else 'error',('可用节点清单已保存；' if scope_saved else '')+'查找遇到异常，已停止；已完成的检查结果如下，请查看当前入口状态',selection)
+        finally:
+            self.selection_progress.pop(uid,None)
+            self.selection_cancellations.pop(uid,None)
+
+    async def action(self, kind, data, cancel=None, progress=None):
+        if kind in ('group_switch','group_retry'):
+            return await self.manual_search(kind,data,cancel,progress)
+        result = await self._action(kind,data)
+        if isinstance(result,dict) and result.pop('needs_search',False):
+            return await self.manual_search(kind,data,cancel,progress,scope_saved=True)
+        return result
+
+    async def _action(self, kind, data):
         async with self.lock:
             if self.maintenance:
                 raise ValueError("恢复未完成，仅允许重新恢复有效备份")
@@ -491,6 +637,10 @@ class Controller:
                 self.state["groups"].append(group)
             elif kind.startswith("group_"):
                 group = self.group(data["group"])
+                if data.get("group_uid",group["uid"])!=group["uid"]:
+                    raise ValueError("分组已被删除或重建，请刷新后重新操作")
+                if group["uid"] in self.selection_progress and kind not in ("group_pause","group_delete"):
+                    raise ValueError("此分组正在查找节点，请先停止查找再修改配置")
                 if kind == "group_scope":
                     scope = validate_scope(data.get('scope'), self.state)
                     node = self.state['nodes'].get(group['node'])
@@ -510,9 +660,12 @@ class Controller:
                         # saves must not disrupt its valid existing authorization.
                         raise
                     self.event('operation', '可用节点清单已保存', group['id'])
-                    if changed and not group['paused'] and not group['pinned']:
-                        await self.find_backup(group, manual=True)
-                    return
+                    if scope != previous and not group['paused'] and not group['pinned'] and (changed or group['status']!='active'):
+                        result=self.group_outcome(group,kind,'saved_pending','可用节点清单已保存；即将按新范围查找节点')
+                        result['needs_search']=True
+                        return result
+                    message='可用节点清单已保存；'+('分组已手动暂停，未启动检查' if group['paused'] else '当前节点已固定，未启动自动查找' if group['pinned'] else '继续使用当前节点' if group['status']=='active' else '范围未变化，保留原重试安排')
+                    return self.group_outcome(group,kind,'saved',message)
                 elif kind == "group_pause":
                     group["paused"] = True
                     await self.pause(group, "手动暂停")
@@ -525,14 +678,6 @@ class Controller:
                 elif kind == "group_delete":
                     await self.gateway.remove(group["id"])
                     self.state["groups"].remove(group)
-                elif kind == "group_switch":
-                    if group["pinned"] or group["paused"]:
-                        raise ValueError("请先解除钉住/手动暂停")
-                    await self.find_backup(group, data.get("node"), manual=True)
-                elif kind == "group_retry":
-                    if group['paused'] or group['pinned']:
-                        raise ValueError('请先启用分组并允许自动换节点')
-                    await self.find_backup(group, manual=True)
                 elif kind == "group_check":
                     if not group['paused'] and not group['pinned'] and group.get('next_retry_at'):
                         await self.find_backup(group, manual=True)
@@ -566,8 +711,10 @@ class Controller:
                            "error": self.core_error, "maintenance": self.maintenance, "coverage": "仅配置探测目标所见出口；未覆盖目的地/地址族未知"}
         for group in state["groups"]:
             candidates = [n for n in self.state['nodes'].values() if eligible(self.state, group, n)]
+            group['selection_progress'] = copy.deepcopy(self.selection_progress.get(group['uid']))
             group['candidate_count'] = len(candidates)
             group['candidate_refs'] = [node_ref(self.state, n) for n in candidates]
             group['endpoint'] = "proxy-egress-manager:%s" % group["port"]
-            group["lease_valid"] = self.gateway.allowed(group["id"], self.gateway.leases[group["id"]].generation)
+            lease = self.gateway.leases.get(group["id"])
+            group["lease_valid"] = bool(lease and self.gateway.allowed(group["id"], lease.generation))
         return state
