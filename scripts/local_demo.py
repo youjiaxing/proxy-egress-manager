@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from aiohttp import web
 from gateway.server import Gateway, Lease
 from scheduler.store import Store
+from scheduler.policy import identity
 from scheduler.controller import Controller
 from scheduler.core import Core
 from web.server import Management
@@ -16,7 +17,7 @@ async def main(sample_source=False):
     with tempfile.TemporaryDirectory(prefix='pem-preview-') as directory:
         store=Store(directory)
         if sample_source:
-            store.state['sources'] = [{'slot':1, 'name':'示例订阅', 'url':'https://example.invalid/sub?token=preview-only',
+            store.state['sources'] = [{'slot':1, 'uid':identity(), 'name':'示例订阅', 'url':'https://example.invalid/sub?token=preview-only',
                                        'enabled':False, 'interval':21600, 'refreshed_at':0, 'error':None}]
         core=Core(directory)
         gateway=Gateway('127.0.0.1')

@@ -6,6 +6,7 @@ x-app: &app
     CORE_CONFIG_DIR: /core
     CORE_API: http://mihomo:9090
     CORE_HOST: mihomo
+    DIAG_CONFIG_DIR: /diagnostic-core
     CORE_SECRET: ${CORE_SECRET:?Generate a private core secret}
     ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set a unique administrator password of at least 16 characters}
     PUBLIC_URL: ${PUBLIC_URL:?Set the HTTPS management origin}
@@ -14,6 +15,7 @@ x-app: &app
   volumes:
     - state:/data
     - core-config:/core
+    - diagnostic-config:/diagnostic-core
   security_opt:
     - no-new-privileges:true
   cap_drop: [ALL]
@@ -43,6 +45,23 @@ services:
     cap_drop: [ALL]
     read_only: true
     tmpfs: ["/tmp:size=32m,mode=1777"]
+  diagnostic-core:
+    image: metacubex/mihomo:v1.19.33@sha256:9211361a3ed85305383288d38c05e85862d6d5a590c10007c37fc059cca82e9c
+    user: "10001:10001"
+    command: [-d, /diagnostic-core]
+    volumes:
+      - diagnostic-config:/diagnostic-core
+    depends_on:
+      init-core:
+        condition: service_completed_successfully
+    networks: [diagnostics]
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp:size=16m,mode=1777"]
   proxy-egress-manager:
     <<: *app
     depends_on:
@@ -54,15 +73,18 @@ services:
       - "127.0.0.1:${WEB_HOST_PORT:-18080}:8080"
     networks:
       backend: {}
+      diagnostics: {}
       business:
         aliases: [proxy-egress-manager]
     restart: unless-stopped
     stop_grace_period: 30s
 networks:
   backend: {}
+  diagnostics: {}
   business:
     external: true
     name: ${BUSINESS_NETWORK:?Set the existing shared Docker network}
 volumes:
   state: {}
   core-config: {}
+  diagnostic-config: {}

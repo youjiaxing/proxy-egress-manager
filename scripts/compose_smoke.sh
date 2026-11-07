@@ -16,3 +16,9 @@ init_container=$(docker compose -p "$project" ps -aq init-core)
 test "$(docker inspect "$init_container" --format '{{.State.ExitCode}}')" = 0
 test "$(docker inspect "$init_container" --format '{{index .Config.Healthcheck.Test 0}}')" = NONE
 docker compose -p "$project" exec -T proxy-egress-manager python main.py healthcheck
+
+docker compose -p "$project" exec -T proxy-egress-manager python - < scripts/diagnostic_smoke.py
+diag_container=$(docker compose -p "$project" ps -q diagnostic-core)
+test "$(docker inspect "$diag_container" --format '{{.HostConfig.Memory}}')" = 134217728
+test "$(docker inspect "$diag_container" --format '{{.HostConfig.NanoCpus}}')" = 250000000
+docker stats --no-stream --format '{{.Name}} CPU={{.CPUPerc}} memory={{.MemUsage}}' "$diag_container"

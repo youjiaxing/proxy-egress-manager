@@ -3,6 +3,8 @@ import ipaddress
 import os
 import socket
 import struct
+import time
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 
 import aiohttp
@@ -99,6 +101,7 @@ class Observation:
     reason: str = "身份验证未完成"
     identity_complete: bool = True
     observed_at: object = None
+    samples: list = field(default_factory=list)
 
     @property
     def complete(self):
@@ -113,7 +116,7 @@ class Observation:
         return {"tcp_ok": self.tcp_ok, "udp_ok": self.udp_ok, "tcp_ips": sorted(self.tcp_ips),
                 "udp_ips": sorted(self.udp_ips), "countries": self.countries,
                 "complete": self.complete, "us": self.us, "reason": self.reason,
-                "coverage": "仅配置的 HTTPS/STUN 目标所见出口；其他目的地和地址族未知"}
+                "coverage": "仅配置的 HTTPS/STUN 目标所见出口；其他目的地和地址族未知", "samples": self.samples}
 
 
 class Prober:
@@ -123,12 +126,19 @@ class Prober:
         connector = ProxyConnector.from_url("socks5://%s:%s" % upstream, rdns=True)
         async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=timeout)) as proxy:
             async def tcp_check(url):
+                start = time.monotonic()
+                ok, ms = False, None
                 try:
                     async with proxy.get(url, allow_redirects=False) as response:
+                        ms = round((time.monotonic()-start)*1000, 2)
                         await response.content.read(4096)
-                        return 200 <= response.status < 400
+                        ok = 200 <= response.status < 400
+                        return ok
                 except Exception:
                     return False
+                finally:
+                    target = urlsplit(url)
+                    result.samples.append({"target":target.scheme+"://"+target.netloc+target.path,"method":"http-get-headers","ok":ok,"ms":ms if ok else None})
             async def tcp_identity(url):
                 try:
                     async with proxy.get(url, allow_redirects=False) as response:
@@ -139,10 +149,15 @@ class Prober:
                     pass
                 return None
             async def udp_identity(server):
+                start = time.monotonic()
+                value = None
                 try:
-                    return await asyncio.wait_for(stun_query(server, timeout, upstream), timeout + 1)
+                    value = await asyncio.wait_for(stun_query(server, timeout, upstream), timeout + 1)
+                    return value
                 except Exception:
                     return None
+                finally:
+                    result.samples.append({"target":server,"method":"stun-with-retry","ok":bool(value),"ms":round((time.monotonic()-start)*1000,2) if value else None})
             checks, tcp_ips, udp_ips = await asyncio.gather(
                 asyncio.gather(*(tcp_check(u) for u in settings["tcp_check_urls"])),
                 asyncio.gather(*(tcp_identity(u) for u in settings["tcp_identity_urls"])),

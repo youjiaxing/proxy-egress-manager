@@ -15,6 +15,7 @@ from aiohttp import web
 from scheduler.core import parse_subscription
 from scheduler.validation import validate_settings
 from scheduler.http import read_limited
+from scheduler.policy import normalize, validate_v2, identity
 from scheduler.maintenance import begin as begin_maintenance, finish as finish_maintenance
 
 
@@ -36,6 +37,9 @@ class Management:
         self.attempts = OrderedDict()
         self.login_inflight = 0
         self.jobs = OrderedDict()
+        self.diagnostic = None
+        self.job_by_id = {}
+        self.cancelled_by_user = set()
         self.job_tasks = set()
         self.app = web.Application(middlewares=[self.security], client_max_size=32 * 1024 * 1024)
         self.app.add_routes([
@@ -47,6 +51,8 @@ class Management:
             web.post("/api/action", self.action), web.get("/api/jobs/{job}", self.job),
             web.post("/api/backup", self.backup), web.post("/api/restore", self.restore),
             web.get("/api/diagnostics", self.diagnostics),
+            web.get('/api/quality', self.quality), web.get('/api/quality/export', self.quality_export),
+            web.post('/api/tests', self.tests), web.post('/api/jobs/{job}/cancel', self.cancel_job),
         ])
         self.app.on_cleanup.append(self.cleanup)
 
@@ -182,10 +188,10 @@ class Management:
         self.jobs[identity] = {"status": "running", "message": "操作已排队"}
         async def execute():
             try:
-                await coroutine
-                self.jobs[identity] = {"status": "done", "message": "操作已完成"}
+                result = await coroutine
+                self.jobs[identity] = {"status": "done", "message": "操作已完成", "result":result}
             except asyncio.CancelledError:
-                self.jobs[identity] = {"status": "error", "message": "服务停止，操作已取消"}
+                self.jobs[identity] = {"status": "error", "message": "用户已取消测试；未执行部分不计入结果" if identity in self.cancelled_by_user else "服务停止，操作已取消"}
                 raise
             except Exception as exc:
                 # Only curated ValueError messages may be returned, never network exception URLs.
@@ -197,13 +203,80 @@ class Management:
                 if oldest is None:
                     break
                 self.jobs.pop(oldest)
+                getattr(self, "test_jobs", set()).discard(oldest)
         task = asyncio.create_task(execute())
+        self.job_by_id[identity] = task
         self.job_tasks.add(task)
+        task.add_done_callback(lambda t: self.job_by_id.pop(identity,None))
         task.add_done_callback(self.job_tasks.discard)
         return web.json_response({"job": identity}, status=202)
 
     async def job(self, request):
-        return web.json_response(self.jobs[request.match_info["job"]])
+        job = self.jobs.get(request.match_info['job'])
+        if job is None: raise web.HTTPNotFound(text='任务记录已不存在')
+        return web.json_response(job)
+
+    async def tests(self, request):
+        if self.diagnostic is None:
+            raise web.HTTPServiceUnavailable(text='独立诊断服务未配置')
+        data = await request.json()
+        identity_holder = []
+        def progress(message):
+            if identity_holder:
+                self.jobs[identity_holder[0]]['message'] = message
+        response = self.submit(self.diagnostic.run(data, progress))
+        identity_holder.append(json.loads(response.text)['job'])
+        if not hasattr(self, 'test_jobs'): self.test_jobs = set()
+        self.test_jobs.add(json.loads(response.text)['job'])
+        return response
+
+    async def cancel_job(self, request):
+        task = self.job_by_id.get(request.match_info['job'])
+        if task is None: raise web.HTTPNotFound()
+        # Only diagnostic jobs expose a cancellation control in the UI. Do not interrupt state transactions.
+        if not request.match_info['job'] in getattr(self, 'test_jobs', set()):
+            raise web.HTTPForbidden(text='此操作不能取消')
+        self.cancelled_by_user.add(request.match_info['job'])
+        if not task.cancelling(): task.cancel()
+        return web.json_response({'ok':True})
+
+    async def quality(self, request):
+        history = self.controller.history
+        if history is None: return web.json_response({'records':[], 'series':[], 'coverage_start':None, 'error':'暂无质量历史'})
+        hours = int(request.query.get('hours','24'))
+        if hours not in (24,168): raise ValueError('时间范围无效')
+        node = request.query.get('node')
+        group = request.query.get('group')
+        if node:
+            from scheduler.policy import node_ref
+            if not any(node_ref(self.controller.state,n)==node for n in self.controller.state['nodes'].values()):
+                raise web.HTTPNotFound()
+            owner = ''
+        elif group:
+            owner = self.controller.group(group)['uid']
+        else: raise ValueError('请选择分组或节点')
+        try:
+            result = await asyncio.to_thread(history.query, owner, hours, node)
+        except Exception:
+            result = {'records':[], 'series':[], 'coverage_start':None, 'error':'质量历史暂不可读，检测状态不受影响'}
+        return web.json_response(result)
+
+    async def quality_export(self, request):
+        history = self.controller.history
+        if history is None: raise web.HTTPNotFound()
+        response = web.StreamResponse(headers={'Content-Type':'application/x-ndjson','Content-Disposition':'attachment; filename="pem-quality.ndjson"'})
+        response.headers['Cache-Control']='no-store'
+        response.headers['X-Content-Type-Options']='nosniff'
+        await response.prepare(request)
+        after = 0
+        while True:
+            rows = await asyncio.to_thread(history.export_page, after)
+            if not rows: break
+            for row in rows:
+                after,t,owner,node,origin,body = row
+                await response.write((json.dumps({'time':t,'owner':owner,'node':node,'origin':origin,'data':json.loads(body)},ensure_ascii=False)+'\n').encode())
+        await response.write_eof()
+        return response
 
     async def backup(self, request):
         async with self.controller.lock:
@@ -219,6 +292,7 @@ class Management:
     async def restore(self, request):
         backup = await request.json()
         validate_backup(backup, self.controller.core.capacity, self.controller.core.source_capacity)
+        normalize(backup["state"])
         async def restore_job():
             async with self.controller.lock:
                 self.controller.maintenance = True
@@ -231,12 +305,16 @@ class Management:
                     group.update(status="paused", reason="备份恢复后等待重验", failure_since=None)
                 old_ids = {g["id"] for g in self.controller.state["groups"]}
                 new_ids = {g["id"] for g in restored["groups"]}
-                for identity in old_ids - new_ids:
-                    await self.controller.gateway.remove(identity)
+                for removed_id in old_ids - new_ids:
+                    await self.controller.gateway.remove(removed_id)
                 for group in restored["groups"]:
                     await self.controller.gateway.listen(group["id"], group["port"])
                 self.controller.identities.clear()
+                restored["quality_epoch"] = identity()
                 self.controller.store.restore(restored, backup.get("events", []))
+                self.controller.history_epoch = restored["quality_epoch"]
+                if self.controller.history:
+                    self.controller.history.record("system",None,"restore",{"reason":"配置已恢复；保留现有质量历史，后续样本重新分段"})
                 self.controller.event("restore", "已恢复备份；旧授权不恢复，等待独立验证")
                 finish_maintenance(self.controller.store.directory)
                 self.controller.maintenance = False
@@ -264,7 +342,7 @@ class Management:
 
 
 def validate_backup(backup, capacity, source_capacity):
-    if backup.get("format") != 1 or backup.get("state", {}).get("schema") != 1:
+    if (backup.get("format"), backup.get("state", {}).get("schema")) not in ((1, 1), (2, 2)):
         raise ValueError("不兼容的备份版本")
     events = backup.get("events", [])
     if not isinstance(events, list) or len(events) > 5000:
@@ -333,3 +411,5 @@ def validate_backup(backup, capacity, source_capacity):
             if not isinstance(group[key], bool):
                 raise ValueError("备份状态无效")
     validate_settings(state["settings"])
+    if backup["format"] == 2:
+        validate_v2(state)

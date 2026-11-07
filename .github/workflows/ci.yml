@@ -37,6 +37,7 @@ jobs:
           npm install --prefix /tmp/pem-ui jsdom@26.1.0 --no-audit --no-fund
           JSDOM_PATH=/tmp/pem-ui/node_modules/jsdom node tests/ui_progress.cjs
           JSDOM_PATH=/tmp/pem-ui/node_modules/jsdom node tests/ui_group_help.cjs
+          JSDOM_PATH=/tmp/pem-ui/node_modules/jsdom node tests/ui_quality.cjs
       - name: Build and smoke-test image
         run: |
           docker build -t pem:ci .

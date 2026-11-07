@@ -42,6 +42,9 @@ def test_offline_backup_restore_and_live_lock_rejection(tmp_path):
     subprocess.run(script+['restore',str(backup)],env=env,check=True,capture_output=True)
     restored=Store(tmp_path)
     assert restored.state['groups'][0]['name']=='before upgrade'
+    assert restored.state['quality_epoch'] != json.loads(backup.read_text())['state']['quality_epoch']
+    from scheduler.history import History
+    assert History(tmp_path).query('system',24)['restores']
     assert all(g['status']=='paused' for g in restored.state['groups'])
     restored.close()
 
@@ -97,7 +100,7 @@ async def test_web_backup_and_failed_restore_stays_maintenance(tmp_path):
         validate_backup(backup,32,16)
         # Introduce a valid source whose provider import will fail at the API boundary.
         nodes,payload=parse_subscription('proxies: [{name: US test, type: socks5, server: example.com, port: 1080}]',1)
-        backup['state']['sources']=[{'slot':1,'name':'x','url':'','enabled':True}]
+        backup['state']['sources']=[{'slot':1,'uid':'1'*32,'name':'x','url':'','enabled':True}]
         backup['state']['nodes']=nodes
         backup['providers']={'1':payload}
         async def fail(slot,payload):
@@ -156,3 +159,33 @@ def test_interrupted_restore_marker_survives_restart_and_blocks_backup(tmp_path)
     assert result.returncode!=0 and '恢复未完成' in result.stderr
     finish(directory)
     assert not (directory/'maintenance.json').exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('remove_group',[False,True])
+async def test_successful_web_restore_changes_history_epoch_and_keeps_history(tmp_path,remove_group):
+    from types import SimpleNamespace
+    from scheduler.history import History
+    store=Store(tmp_path);core=FakeCore();core.directory=tmp_path/'core'
+    gateway=Gateway('127.0.0.1');controller=Controller(store,core,gateway,FakeProber(core))
+    for g in store.state['groups']:g['paused']=True
+    history=History(tmp_path);history.start();controller.history=history
+    history.record('retained',None,'state',{'reason':'before restore'})
+    async def listen(group,port):gateway.leases.setdefault(group,Lease())
+    gateway.listen=listen
+    for g in store.state['groups']:await listen(g['id'],g['port'])
+    manager=Management(controller,'local-fixture-password-long','http://localhost',secure=False)
+    backup=store.backup();backup['providers']={}
+    if remove_group:backup['state']['groups'].pop()
+    old_epoch=controller.history_epoch
+    class Request:
+        async def json(self):return backup
+    response=await manager.restore(Request())
+    job=json.loads(response.text)['job']
+    await asyncio.gather(*list(manager.job_tasks))
+    assert manager.jobs[job]['status']=='done',manager.jobs[job]
+    assert not controller.maintenance and controller.history_epoch!=old_epoch
+    await history.queue.join()
+    assert history.query('retained',24)['records'][0]['reason']=='before restore'
+    assert history.query('system',24)['restores']
+    await gateway.close();await history.close();store.close()

@@ -1,6 +1,6 @@
 # Proxy Egress Manager
 
-用于 Docker 共享网络的 SOCKS5 出口分组工具。每组使用固定入口、独立验证的美国出口；正常保持，持续故障自动寻找独立备用，没有备用则暂停。支持 TCP CONNECT 和 UDP ASSOCIATE、网页管理、多订阅、钉住、备份恢复和 webhook 告警。
+用于 Docker 共享网络的 SOCKS5 出口分组工具。每组使用固定入口、独立验证的美国出口；正常保持，持续故障自动寻找独立备用，没有备用则暂停。支持 TCP CONNECT 和 UDP ASSOCIATE、网页管理、多订阅、分组节点范围、质量历史、独立手动诊断、固定节点、备份恢复和 webhook 告警。
 
 **状态：v0.1.6 已公开发布，VPS 管理面与 HTTPS 反代已验收。** 原生 Linux arm64 / amd64 远程 CI、镜像构建与 Compose 启动均通过；公网端口边界与登录保护已独立验证，详细范围见 [验证记录](docs/verification.md)。已接入用户订阅；独立美国出口放行仍受现场探测结果限制，公共身份服务可靠性仍需验证。不得仅凭节点名称或 `udp: true` 放行。
 
@@ -33,6 +33,10 @@ ghcr.io/youjiaxing/proxy-egress-manager:v0.1.6@sha256:6d270529f81953af4fa4714556
 优先部署固定版本与摘要。自行构建时使用 `docker compose -f compose.yaml -f compose.build.yaml build`；生产配置本身不构建源码，Mihomo 仍使用 Compose 中的固定上游摘要。
 
 复制 `.env.example` 到 `.env`，设置独有秘密、HTTPS origin、已有业务 network 和镜像引用。示例没有默认密码。不要将真实 `.env`、数据卷或备份加入 Git。
+
+## 节点与质量
+
+订阅点击“查看节点”；节点页支持卡片/表格，布局记在本机浏览器。分组“可用节点清单”控制自动备用范围，“质量详情”查看记录及手动诊断。未使用节点不增加定时探测；成功率与 UDP 往返未响应比例均不等于真实业务丢包率。完整用法、资源限制与迁移边界见 [节点范围与质量记录](docs/quality.md)。
 
 ## 本地开发
 

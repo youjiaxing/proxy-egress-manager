@@ -20,5 +20,9 @@ for name,service in compose['services'].items():
     for volume in service.get('volumes',[]):
         assert 'docker.sock' not in str(volume),name
 assert 'ports' not in compose['services']['mihomo']
+assert 'ports' not in compose['services']['diagnostic-core']
+assert compose['services']['diagnostic-core']['networks'] == ['diagnostics']
+assert compose['services']['diagnostic-core']['mem_limit'] == '128m'
+assert compose['services']['init-core']['healthcheck']['disable'] is True
 assert not any('1081' in str(p) or '1082' in str(p) for p in compose['services']['proxy-egress-manager'].get('ports',[]))
 print('Release boundaries checked')

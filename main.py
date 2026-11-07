@@ -12,6 +12,8 @@ from gateway.server import Gateway
 from scheduler.controller import Controller
 from scheduler.core import Core
 from scheduler.store import Store
+from scheduler.history import History
+from scheduler.diagnostics import Diagnostics, diagnostic_core
 from web.server import Management
 
 
@@ -52,7 +54,14 @@ async def serve():
     store = Store(directory)
     gateway = Gateway(os.environ.get("SOCKS_BIND", "0.0.0.0"), os.environ.get("UDP_ADVERTISE_HOST"))
     controller = Controller(store, core, gateway)
+    history = History(store.directory)
+    controller.history = history
+    history.start()
     management = Management(controller, password, public_url, secure=not development)
+    diag = None
+    if os.environ.get('DIAG_CONFIG_DIR'):
+        diag = diagnostic_core(os.environ['DIAG_CONFIG_DIR'],core.secret,os.environ.get('DIAG_API','http://diagnostic-core:9090'),os.environ.get('DIAG_HOST','diagnostic-core'))
+        management.diagnostic = Diagnostics(controller,diag,history)
     runner = web.AppRunner(management.app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, os.environ.get("WEB_BIND", "0.0.0.0"), int(os.environ.get("WEB_PORT", "8080")))
@@ -68,6 +77,8 @@ async def serve():
     finally:
         await runner.cleanup()
         await controller.stop()
+        await history.close()
+        if diag: await diag.close()
         store.close()
         lockfile.close()
 
@@ -82,6 +93,8 @@ def main():
         if len(core.secret) < 24:
             raise SystemExit("CORE_SECRET 至少 24 字符")
         core.initialize()
+        if os.environ.get("DIAG_CONFIG_DIR"):
+            diagnostic_core(os.environ["DIAG_CONFIG_DIR"],core.secret).initialize()
     elif args.command == "healthcheck":
         import urllib.request
         try:

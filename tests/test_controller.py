@@ -7,6 +7,7 @@ from gateway.server import Gateway
 from scheduler.controller import Controller
 from scheduler.probe import Observation
 from scheduler.store import Store
+from scheduler.policy import identity
 
 
 def good(ip):
@@ -45,7 +46,7 @@ class FakeProber:
 def controller(tmp_path):
     now = [100.0]
     store = Store(tmp_path)
-    store.state["sources"] = [{"slot": 1, "name": "one", "enabled": True, "url": "", "refreshed_at": time.time()}]
+    store.state["sources"] = [{"slot": 1, "uid": identity(), "name": "one", "enabled": True, "url": "", "refreshed_at": time.time()}]
     store.state["nodes"] = {n: {"id": n, "source": 1, "name": n, "disabled": False, "priority": 100, "hint_us": True, "last_probe": None} for n in ("a", "b", "c")}
     for g, n in zip(store.state["groups"], ("a", "b")):
         g["node"] = n

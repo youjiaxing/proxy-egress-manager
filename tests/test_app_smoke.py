@@ -83,7 +83,7 @@ async def test_application_process_login_health_and_shutdown(tmp_path):
                 assert state['health']['scheduler_valid']
             async with client.post(url+'/api/backup',json={},headers={'Origin':url,'X-CSRF-Token':csrf}) as response:
                 assert response.status==200
-                assert (await response.json())['format']==1
+                assert (await response.json())['format']==2
             # No subscription means no proxy transfer authorization, even with healthy core/UI.
             reader,writer=await asyncio.open_connection('127.0.0.1',1081)
             writer.write(b'\x05\x01\x00'); await writer.drain()

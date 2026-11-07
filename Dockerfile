@@ -3,6 +3,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DATA_DIR=/data CORE_CONFIG_DIR=
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && groupadd -g 10001 pem && useradd -u 10001 -g pem -M pem && mkdir -p /data /core && chown -R pem:pem /data /core
+RUN mkdir -p /diagnostic-core && chown pem:pem /diagnostic-core
 COPY gateway ./gateway
 COPY scheduler ./scheduler
 COPY web ./web
