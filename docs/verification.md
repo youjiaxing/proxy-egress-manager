@@ -130,3 +130,13 @@
 - 迁移和诊断/历史分别经过独立只读审查；修正严格 schema2、不重放遗留迁移库、离线恢复先写屏障、跨重启/恢复分段、完整窗口的 UDP/状态记录、取消文案及清理失败回滚凭据风险。保留节点保存失败误撤销也已修正。
 - 使用真实 v0.1.6 发布镜像和新版镜像、临时 Docker 卷及 `--network none`，完成旧备份→v2 限定范围→旧程序拒绝墓碑→原样部署脚本回退代码读取卷外备份→旧版成功恢复→再次 v2 迁移；确认清除 v2 ready/数据库、保留独立质量历史，临时卷已清理。不涉及真实订阅。
 - 本地隔离浏览器此前已检查桌面表格、布局记忆、范围弹窗与空历史；本轮没有追加截图/手机视觉验收。已关闭任务页和虚拟演示服务。
+
+## v0.2.0 发布与 VPS 验收
+
+- 源码 `71842cb293dd3d8c7e744f4586a4e79df139d7b8`，本地最终 73 passed（6.66 秒）。原生双架构 CI https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42332932267 ：amd64 73 passed（8.66 秒），arm64 73 passed（10.56 秒），两架构均完成实际 Compose HTTP + 20/20 UDP fixture 和资源限制验证。
+- 发布 https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.2.0 ，流程 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42332991515 成功，重复原生双架构测试后产出 `ghcr.io/youjiaxing/proxy-egress-manager:v0.2.0@sha256:e2c01c49bdd211d45f8c27347e9391588aaa06b82bf26b8bf80aeeaeaee39953`。Release 附件摘要、架构索引和源码提交一致；空 Docker 配置匿名读取 manifest 成功，VPS 实际拉取部署成功。
+- 先预拉、校验待用 Compose，再停止项目并保存旧环境、旧 Compose 和旧镜像的离线一致备份。备份目录 `/root/proxy-egress-manager-deployment-backups/20261107T031649Z-pre-v0.2.0`。升级脚本经独立只读复核与真实镜像隔离回退演练，修正 Bash `if rollback` 抑制 errexit 时两处 cp 失败应显式 return 的路径，无剩余阻塞。
+- VPS 迁移前后 2 个订阅、77 个节点、探测设置及分组手动偏好一致；原组迁移范围为 all，来源与分组获得代际标识。初始化退出 0 / Healthcheck NONE；应用健康，独立诊断核心就绪。诊断核心只有一个专用网络、无发布端口，内存 134217728 字节、CPU 250000000 NanoCpus；上线该次快照约 20.29 MiB / 0.07%，不代表峰值保证。
+- 真实 HTTPS 认证、Secure/HttpOnly Cookie、state 脱敏、scope、质量接口及新 UI 静态资源通过，退出后 state 返回 401。没有向真实节点额外发起手动诊断或全订阅测速。独立历史已积累正常调度的观测。
+- 外部验收 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42333294788 成功：DNS、可信 TLS、HTTP 跳转、未认证与错误 Origin 拒绝，公网 1081/1082/9090/18080 均不可达。
+- **业务出口限制仍存在：** 读取升级前备份与升级后状态确认两组此前都未放行。验收时第 1 组 TCP/UDP 身份各有结果，HTTP/STUN 连通样本成功，但国家归属结果为空，完整美国出口资格不足；第 2 组无合格独立备用并按退避重试。未修改用户探测目标、国家准入或业务服务设置，不将管理面部署成功描述为两组业务出口可用。
