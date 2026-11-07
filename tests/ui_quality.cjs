@@ -46,7 +46,7 @@ async function until(fn){for(let i=0;i<150;i++){if(fn())return;await pause();}th
  d.getElementById('quality-close').click();
 
  await until(()=>d.getElementById('operation-list').textContent.includes('处理完成'));
- d.querySelector('[data-scope="1"]').click();assert.equal(d.getElementById('dialog').open,true);
+ d.querySelector('[data-configure="1"]').click();d.querySelector('[data-scope="1"]').click();assert.equal(d.getElementById('dialog').open,true);
  const mode=d.getElementById('scope-mode');mode.value='sources';mode.dispatchEvent(new w.Event('change'));
  d.querySelector('#scope-options input[value=t]').checked=true;
  d.querySelector('[name=confirm_disconnect]').checked=true;

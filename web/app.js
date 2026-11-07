@@ -152,18 +152,20 @@ function renderGroups() {
   const markup = state.groups.map(g => {
     const n = state.nodes[g.node], source = n && state.sources.find(s=>s.slot===n.source);
     const status = g.paused ? '已手动暂停' : g.lease_valid ? '可用' : '暂不可用';
-    const buttons = [
-      helpButton('check-'+g.id,'检查连接',`data-action="group_check" data-group="${esc(g.id)}"`,'安排一次全组连接和出口验证；手动暂停的组仍保持暂停。必要时系统可能寻找替代节点。'),
-      helpButton('switch-'+g.id,'更换节点',`data-switch="${esc(g.id)}"`,'自动选择或指定新的代理节点，验证合格后才使用。切换会断开已有连接；请先启用分组并解除固定。'),
+    const primary = [
+      helpButton('configure-'+g.id,'配置分组',`data-configure="${esc(g.id)}"`,'选择自动优选或手动多选，为本组配置可故障切换的节点池。'),
       helpButton('pause-'+g.id,g.paused?'启用分组':'暂停分组',`data-action="${g.paused?'group_resume':'group_pause'}" data-group="${esc(g.id)}"`,g.paused?'重新启用并等待验证，验证通过前仍不能使用。':'停止这个代理入口并断开已有连接，直到你再次启用。'),
+      helpButton('quality-'+g.id,'连接质量',`data-quality-group="${esc(g.id)}"`,'查看运行检查历史和延迟趋势。'),
+      helpButton('traffic-'+g.id,'流量用量',`data-traffic-group="${esc(g.uid)}"`,'按需查看用量，不发起测速。')
+    ].join('');
+    const secondary = [
+      helpButton('check-'+g.id,'检查连接',`data-action="group_check" data-group="${esc(g.id)}"`,'安排一次全组连接和出口验证；手动暂停的组仍保持暂停。必要时系统可能寻找替代节点。'),
+      helpButton('switch-'+g.id,'立即切换当前节点',`data-switch="${esc(g.id)}"`,'只切换当前使用的一个节点，不修改节点池。验证合格后才使用。切换会断开已有连接；请先启用分组并解除固定。'),
       helpButton('pin-'+g.id,g.pinned?'允许自动换节点':'固定当前节点',`data-pin="${esc(g.id)}" aria-disabled="${!g.pinned&&!g.node}"`,g.pinned?'解除固定；正常时保持当前节点，满足切换条件后才寻找替代节点。':!g.node?'请先等待分组获得节点，再固定当前节点。':'保持当前节点，不自动更换；故障或验证未通过时停止转发。固定节点不代表固定公网 IP。'),
-      helpButton('auto-pool-'+g.id,'自动优选',`data-evaluate="${esc(g.id)}"`,'按需评估当前允许范围，结合本次延迟推荐最多三个节点，确认保存后组成节点池。'),
-      helpButton('scope-'+g.id,'手动组池',`data-scope="${esc(g.id)}"`,'指定本组允许使用的订阅或节点；移出当前节点会断开连接。'),
-      helpButton('traffic-'+g.id,'流量用量',`data-traffic-group="${esc(g.uid)}"`,'按需查看今日、本月和累计用量；不发起测速。'),
-      helpButton('quality-'+g.id,'连接质量',`data-quality-group="${esc(g.id)}"`,'查看运行检查历史，或独立测试当前节点；手动测试不修改业务分组。'),
       helpButton('retry-'+g.id,'立即重试',`data-action="group_retry" data-group="${esc(g.id)}"`,'在允许范围内立即尝试一轮；没有合格节点后按1、5、15分钟放慢。'),
       helpButton('delete-'+g.id,'删除分组',`data-delete-group="${esc(g.id)}"`,'删除该代理入口并断开已有连接。使用此地址的业务需要重新配置；订阅不会删除。')
     ].join('');
+    const buttons = primary + `<details class="group-more" data-more-group="${esc(g.uid||g.id)}"><summary>更多操作</summary><div class="actions">${secondary}</div></details>`;
     const scopeText = describeScope(g);
     const retryText = g.next_retry_at>Date.now()/1000 ? `下次恢复检查：${date(g.next_retry_at)}，等待期间不重复探测` : '';
     if(layout==='table') return `<tr><td><strong>${esc(g.name)}</strong><br><span class="badge ${g.lease_valid?'active':'paused'}">${status}</span><br>${esc(n?.name||'无合格节点')}<br><small>${esc(g.endpoint)}</small></td><td>${esc(scopeText)}<br><small>${g.candidate_count??0} 个有效候选</small></td><td>TCP ${esc(g.tcp_ips.join(', ')||'尚未验证')}<br>UDP ${esc(g.udp_ips.join(', ')||'尚未验证')}<p>${esc(groupReason(g.reason))}</p><small>${esc(retryText)}</small>${groupFeedback(g)}</td><td><div class="table-actions">${buttons}</div></td></tr>`;
@@ -171,8 +173,10 @@ function renderGroups() {
   }).join('') || '<p class="empty">尚无分组，创建后会验证可用节点。</p>';
   // Unchanged polling results should not interrupt reading a tooltip or keyboard navigation.
   if(markup===renderGroups.previous) return;
+  const expanded=new Set([...$('group-list').querySelectorAll('[data-more-group][open]')].map(el=>el.dataset.moreGroup));
   const focused=document.activeElement?.dataset.control;
   hideHelp(); $('group-list').className=layout==='cards'?'grid':'table-wrap'; $('group-list').innerHTML=layout==='cards'?markup:`<table class="group-table"><thead><tr><th>分组 / 当前节点</th><th>允许范围</th><th>运行状态</th><th>操作</th></tr></thead><tbody>${markup}</tbody></table>`; renderGroups.previous=markup;
+  $('group-list').querySelectorAll('[data-more-group]').forEach(el=>el.open=expanded.has(el.dataset.moreGroup));
   if(focused) [...$('group-list').querySelectorAll('[data-control]')].find(b=>b.dataset.control===focused)?.focus({preventScroll:true});
 }
 function renderSources() {
@@ -216,7 +220,7 @@ function fillSettings() {
 }
 function formDialog(title, fields, submit, submitLabel = '确认') {
   hideHelp();
-  $('dialog-title').textContent = title; $('dialog-fields').innerHTML = fields; $('dialog-form').querySelector('[type=submit]').textContent = submitLabel; dialogSubmit = submit; $('dialog').showModal();
+  $('dialog-title').textContent = title; $('dialog-fields').innerHTML = fields; $('dialog-form').querySelector('[type=submit]').textContent = submitLabel; $('dialog-form').querySelector('[type=submit]').hidden=false; dialogSubmit = submit; $('dialog').showModal();
 }
 function clearDialog() { scopeSequence++; $('dialog').classList.remove('pool-dialog'); $('dialog-fields').replaceChildren(); dialogSubmit = null; }
 function closeDialog() { if ($('dialog').open) $('dialog').close(); clearDialog(); }
@@ -245,8 +249,10 @@ document.addEventListener('click',guarded(async e=>{
   if(b.dataset.viewSource){sourceFilter=b.dataset.viewSource;$('node-filter').value='';$('us-only').checked=false;$('source-filter').value=sourceFilter;document.querySelector('[data-tab=nodes]').click();renderNodes();}
   if(b.dataset.trafficGroup)openTraffic({group:b.dataset.trafficGroup});
   if(b.dataset.trafficNode)openTraffic({node:b.dataset.trafficNode});
-  if(b.dataset.scope)openScope(b.dataset.scope);
-  if(b.dataset.evaluate){if(confirm('按需评估当前允许范围（最多100个候选），会使用订阅流量；完成后推荐节点池供你确认，不立即切换业务节点。'))await action('group_evaluate',{group:b.dataset.evaluate});}
+  if(b.dataset.configure)openGroupConfiguration(b.dataset.configure);
+  if(b.dataset.scope){const id=b.dataset.scope;closeDialog();openScope(id);}
+  if(b.dataset.viewRecommendation){const id=b.dataset.viewRecommendation,g=state.groups.find(g=>g.id===id);closeDialog();openScope(id,g.last_evaluation.recommended);}
+  if(b.dataset.evaluate){const id=b.dataset.evaluate,g=state.groups.find(g=>g.id===id);if(g.paused||g.pinned){message('请先启用分组并允许自动换节点，再开始自动优选。');return;}if(confirm('按需评估当前允许范围（最多100个候选），会使用订阅流量；完成后推荐节点池供你确认，不立即切换业务节点。')){closeDialog();await action('group_evaluate',{group:id});}}
   if(b.dataset.qualityGroup)openQuality({group:b.dataset.qualityGroup});
   if(b.dataset.qualityNode)openQuality({node:b.dataset.qualityNode});
   if(b.dataset.cancelTest){await api('/api/jobs/'+b.dataset.cancelTest+'/cancel',{});message('已请求停止，将在当前检查结束后停止。');}
@@ -262,7 +268,7 @@ document.addEventListener('click',guarded(async e=>{
     const id=b.dataset.switch, g=state.groups.find(g=>g.id===id);
     if(g.paused) {message('请先点击“启用分组”，再更换节点。');return;}
     if(g.pinned) {message('请先点击“允许自动换节点”，再更换节点。');return;}
-    formDialog('更换代理节点','<label>选择代理节点<select name="node"><option value="">自动查找合格节点（推荐）</option>'+Object.values(state.nodes).filter(n=>!n.disabled&&(!g.candidate_refs||g.candidate_refs.includes(n.ref))).map(n=>`<option value="${esc(n.id)}">${esc(n.name)} · 订阅 ${n.source}</option>`).join('')+'</select></label><p class="muted">自动查找会连续分批检查允许范围，优先检查名称标注美国的节点，找到合格独立出口即停止，单次最多 100 个。指定节点只验证所选的一个。查找进度和失败原因显示在本组卡片，可随时请求停止。验证通过后才应用；成功切换会断开已有连接。选择节点不会修改可用清单。</p>',v=>action('group_switch',{group:id,node:v.node||null}),'开始选择并验证');
+    formDialog('立即切换当前节点','<label>选择代理节点<select name="node"><option value="">自动查找合格节点（推荐）</option>'+Object.values(state.nodes).filter(n=>!n.disabled&&(!g.candidate_refs||g.candidate_refs.includes(n.ref))).map(n=>`<option value="${esc(n.id)}">${esc(n.name)} · 订阅 ${n.source}</option>`).join('')+'</select></label><p class="muted">自动查找会连续分批检查允许范围，优先检查名称标注美国的节点，找到合格独立出口即停止，单次最多 100 个。指定节点只验证所选的一个。查找进度和失败原因显示在本组卡片，可随时请求停止。验证通过后才应用；成功切换会断开已有连接。选择节点不会修改可用清单。</p>',v=>action('group_switch',{group:id,node:v.node||null}),'开始选择并验证');
   }
   if(b.dataset.deleteGroup && confirm('删除这个代理入口并断开已有连接？使用此地址的业务需要重新配置，订阅不会删除。')) await action('group_delete',{group:b.dataset.deleteGroup});
   if(b.dataset.sourceEdit) {
@@ -283,6 +289,12 @@ $('backup').onclick=guarded(async()=>{if(confirm('备份含订阅与节点秘密
 $('diagnostics').onclick=guarded(async()=>download(await api('/api/diagnostics'),'pem-diagnostics.json'));
 $('restore').onclick=guarded(async()=>{const f=$('restore-file').files[0]; if(!f) throw new Error('请先选择备份'); if(!confirm('恢复配置会停止全部代理并覆盖现有配置。旧版本备份将恢复为全部订阅范围；新增质量历史保留并标记恢复时间。确认已保存当前配置？')) return; const {job}=await api('/api/restore',JSON.parse(await f.text())); await waitForJob(job);});
 
+function openGroupConfiguration(id){
+  const g=state.groups.find(g=>g.id===id),blocked=g.paused||g.pinned,busy=!!g.selection_progress;
+  const evaluation=g.last_evaluation;
+  formDialog('配置分组 · '+g.name,`<p>先为分组选一组可用节点。正常使用其中一个，故障后在池内自动切换；业务代理地址不变。</p><p class="notice">当前节点池：${esc(describeScope(g))}。${g.paused?'分组已暂停：可以编辑并保存节点池，保存后仍需启用分组。':g.pinned?'当前节点已固定：可以编辑并保存节点池；解除固定后才允许自动切换。':'当前节点仍在新池内时会继续使用，保存不会主动换节点。'}</p>${busy?'<p role="status">本组正在评估或查找节点，请在卡片查看进度或停止后再配置。</p>':''}<div class="configuration-choices"><section><h3>1. 自动优选节点池</h3><p>评估当前允许范围，按出口资格和本次延迟推荐最多 3 个节点。先查看结果，再确认保存。</p><p class="status-note">只在你开始评估时使用流量，单次最多 100 个候选；不改变当前业务节点。</p><button type="button" data-evaluate="${esc(id)}" ${blocked||busy?'disabled':''}>开始评估并推荐</button>${blocked?'<p>开始评估前，请先在分组卡片启用分组并允许自动换节点；不会替你解除暂停或固定。</p>':''}${evaluation?`<p>上次评估：${date(evaluation.finished)} · ${evaluation.checked}/${evaluation.total} 个候选 · 推荐 ${evaluation.recommended?.length||0} 个</p><button type="button" class="quiet" data-view-recommendation="${esc(id)}" ${busy?'disabled':''}>查看上次结果并调整</button>`:''}</section><section><h3>2. 手动选择多个节点</h3><p>对照节点的验证结果、延迟和已有质量记录，勾选多个节点组成节点池。</p><p class="status-note">打开列表只读取已有记录，不测速。未知数据会明确标注，保存后仍需验证才能使用。</p><button type="button" data-scope="${esc(id)}" ${busy?'disabled':''}>查看节点并多选</button></section></div><p class="status-note">配置节点池不会让多个节点同时承载业务。只想临时切换当前节点，可在卡片“更多操作”中选择“立即切换当前节点”。</p>`,()=>{});
+  $('dialog-form').querySelector('[type=submit]').hidden=true;
+}
 function poolNode(g,n){
   const evaluation=g.last_evaluation?.attempts?.find(a=>a.node_ref===n.ref),p=n.last_probe;
   const newer=p?.time>(evaluation?.time||0),samples=p?.samples||[];
@@ -294,7 +306,7 @@ function poolNode(g,n){
 }
 function openScope(id,recommended){
   const g=state.groups.find(g=>g.id===id),scope=g.scope||{mode:'all',ids:[]};
-  formDialog(recommended?'自动优选 · 确认节点池':'手动配置节点池',`<p>勾选多个节点组成可用池；正常保持一个，故障时在池内切换。保存后重新验证，通过才启用。</p>${recommended?`<p class="notice">已按本次检查结果推荐 ${recommended.length} 个节点。排序先看 HTTP 检查失败数，再看较慢目标的 HTTP 延迟和 UDP 耗时；单次评估不代表长期稳定。</p>`:''}<label>节点池来源<select name="scope_mode" id="scope-mode"><option value="all">全部已启用订阅</option><option value="sources">指定订阅（含以后新增节点）</option><option value="nodes">手动勾选多个节点</option></select></label><div class="pool-filters"><input id="scope-search" type="search" placeholder="搜索节点或订阅"><label><input id="scope-qualified" type="checkbox">只看上次评估通过的节点</label></div><div id="scope-options" class="scope-options"></div><div id="scope-notice" class="notice"></div><label><input type="checkbox" name="confirm_disconnect">若当前节点被移出，我确认断开已有连接</label><p class="status-note">延迟包含代理建连，显示同次测试中较慢 HTTP 目标的耗时。历史通过比例与波动来自单独目标和来源，不是真实丢包率；没有记录就显示未知。时间较早的评估需复验。固定或暂停状态不会因保存解除。</p>`,v=>action('group_scope',{group:id,scope:{mode:v.scope_mode,ids:v.scope_ids||[]},confirm_disconnect:v.confirm_disconnect==='on'}),'保存并验证节点池');
+  formDialog(recommended?'自动优选 · 确认节点池':'手动配置节点池',`<p>勾选多个节点组成可用池；正常保持一个，故障时在池内切换。当前节点仍在池内时继续使用；需要换节点时重新验证，通过才启用。</p>${recommended?`<p class="notice">已按本次检查结果推荐 ${recommended.length} 个节点。排序先看 HTTP 检查失败数，再看较慢目标的 HTTP 延迟和 UDP 耗时；单次评估不代表长期稳定。</p>`:''}<label>节点池来源<select name="scope_mode" id="scope-mode"><option value="all">全部已启用订阅</option><option value="sources">指定订阅（含以后新增节点）</option><option value="nodes">手动勾选多个节点</option></select></label><div class="pool-filters"><input id="scope-search" type="search" placeholder="搜索节点或订阅"><label><input id="scope-qualified" type="checkbox">只看上次评估通过的节点</label></div><div id="scope-options" class="scope-options"></div><div id="scope-notice" class="notice"></div><label><input type="checkbox" name="confirm_disconnect">若当前节点被移出，我确认断开已有连接</label><p class="status-note">延迟包含代理建连，显示同次测试中较慢 HTTP 目标的耗时。历史通过比例与波动来自单独目标和来源，不是真实丢包率；没有记录就显示未知。时间较早的评估需复验。固定或暂停状态不会因保存解除。</p>`,v=>action('group_scope',{group:id,scope:{mode:v.scope_mode,ids:v.scope_ids||[]},confirm_disconnect:v.confirm_disconnect==='on'}),'确认保存节点池');
   $('dialog').classList.add('pool-dialog');
   $('scope-mode').value='nodes';
   const selected=new Set(recommended|| (scope.mode==='nodes'?scope.ids:[])),selectedSources=new Set(scope.mode==='sources'?scope.ids:[]);
@@ -314,7 +326,7 @@ function openScope(id,recommended){
       $('scope-options').innerHTML=sources.map(s=>`<label><input type="checkbox" name="ids" value="${esc(s.id)}" ${selectedSources.has(s.id)?'checked':''}>${esc(s.name)}</label>`).join('');
       $('scope-options').querySelectorAll('[name=ids]').forEach(box=>box.onchange=()=>box.checked?selectedSources.add(box.value):selectedSources.delete(box.value));
     }else $('scope-options').innerHTML='<p>使用全部已启用订阅的未禁用节点。</p>';
-    $('scope-notice').textContent=`当前节点：${state.nodes[g.node]?.name||'无合格节点'}。当前节点被移出时先断开；无可用当前节点时保存后立即查找。`;
+    $('scope-notice').textContent=`当前节点：${state.nodes[g.node]?.name||'无合格节点'}。${g.paused?'分组已暂停，保存后仍保持暂停；需回到卡片启用。':g.pinned?'当前节点已固定，保存不会解除固定；需允许自动换节点后才会池内切换。':'当前节点保留在池内时继续使用；移出时先断开并验证新节点。'}`;
     $('scope-qualified').disabled=mode!=='nodes';filter();
   };
   const filter=()=>{const text=$('scope-search').value.toLowerCase(),only=$('scope-qualified').checked;$('scope-options').querySelectorAll('[data-pool-row]').forEach(r=>r.hidden=!r.textContent.toLowerCase().includes(text)||(only&&r.dataset.qualified!=='true'));if($('scope-mode').value==='sources')$('scope-options').querySelectorAll('label').forEach(l=>l.hidden=!l.textContent.toLowerCase().includes(text));};
