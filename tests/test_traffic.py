@@ -184,3 +184,17 @@ async def test_meter_setup_failure_preserves_original_probe_route(tmp_path,monke
         assert route==('original-core',20000)
     assert t.gap and '原检测继续' in t.error
     await t.close()
+
+
+@pytest.mark.asyncio
+async def test_persistence_failure_does_not_interrupt_live_business(tmp_path,backend,monkeypatch):
+    t=Traffic(tmp_path);g=Gateway('127.0.0.1');g.traffic=t;g.pulse(60)
+    await g.listen('1',0);g.grant('1',backend,g.clock()+60,CTX)
+    r,w,_=await open_socks('127.0.0.1',g.servers['1'].sockets[0].getsockname()[1],1,'example.com',443)
+    try:
+        w.write(b'before');await w.drain();assert await r.readexactly(6)==b'before'
+        def fail(*args):raise OSError('fixture disk full')
+        monkeypatch.setattr(t,'write',fail);await t.flush()
+        assert t.gap and t.error and g.allowed('1',g.leases['1'].generation)
+        w.write(b'after');await w.drain();assert await r.readexactly(5)==b'after'
+    finally:w.close();await g.close();await t.close()
