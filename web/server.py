@@ -53,6 +53,7 @@ class Management:
             web.get("/api/diagnostics", self.diagnostics),
             web.get('/api/traffic', self.traffic), web.get('/api/quality', self.quality), web.get('/api/quality/export', self.quality_export),
             web.post('/api/groups/{uid}/selection/cancel', self.cancel_selection),
+            web.get('/api/pool', self.pool),
             web.post('/api/tests', self.tests), web.post('/api/jobs/{job}/cancel', self.cancel_job),
         ])
         self.app.on_cleanup.append(self.cleanup)
@@ -265,6 +266,30 @@ class Management:
             raise web.HTTPNotFound(text='本组当前没有正在进行的节点查找')
         event.set()
         return web.json_response({'ok':True})
+
+    async def pool(self, request):
+        """Read existing per-node history on demand, never send a probe."""
+        group=self.controller.group(request.query.get('group'))
+        uid=group['uid'];history=self.controller.history
+        from scheduler.policy import node_ref, source_for
+        import hashlib
+        settings=self.controller.state['settings']
+        config=hashlib.sha256(json.dumps([self.controller.history_epoch]+[settings[k] for k in ('tcp_check_urls','tcp_identity_urls','stun_servers','country_url')],sort_keys=True).encode()).hexdigest()[:16]
+        refs=[node_ref(self.controller.state,n) for n in self.controller.state['nodes'].values()
+              if not n['disabled'] and source_for(self.controller.state,n)['enabled']][:100]
+        def read():
+            summaries={}
+            for ref in refs:
+                rows=history.query('',24,ref)['series'] if history else []
+                rows=[s for s in rows if s.get('config')==config and s['method']=='http-get-headers' and s['origin'] in ('running','candidate')]
+                rows.sort(key=lambda s:(s['origin']!='running',-(s['points'][-1]['time'] if s['points'] else 0)))
+                summaries[ref]={k:rows[0][k] for k in ('target','origin','attempts','successes','mean_ms','variation_ms')} if rows else None
+            return summaries
+        try:
+            summaries=await asyncio.to_thread(read)
+            return web.json_response({'group_uid':uid,'summaries':summaries})
+        except Exception:
+            return web.json_response({'group_uid':uid,'summaries':{},'error':'历史暂不可读'})
 
     async def traffic(self, request):
         meter = self.controller.traffic

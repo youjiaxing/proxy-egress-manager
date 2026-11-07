@@ -28,7 +28,7 @@ async function until(fn){for(let i=0;i<200;i++){if(fn())return;await pause();}th
  assert.equal(posts[0].kind,'group_evaluate');assert.equal(posts[0].group_uid,'g1');
  assert.equal(d.querySelectorAll('#scope-options input:checked').length,2);
  assert.match(d.getElementById('scope-options').textContent,/30 ms/);assert.match(d.getElementById('scope-options').textContent,/100\/105/);
- assert.match(d.getElementById('scope-options').textContent,/暂无历史统计/);
+ assert.match(d.getElementById('scope-options').textContent,/尚未读取|正在读取|暂无同配置历史统计/);
  d.querySelector('#scope-options [value="s/a"]').checked=false;
  d.getElementById('dialog-form').dispatchEvent(new w.Event('submit',{cancelable:true}));
  await until(()=>posts.some(p=>p.kind==='group_scope'));

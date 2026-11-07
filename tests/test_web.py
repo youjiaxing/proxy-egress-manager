@@ -97,3 +97,34 @@ async def test_source_edit_details_do_not_wait_for_scheduler_probe_lock(tmp_path
             assert (await response.json())['slot']==1
     finally:
         await client.close(); store.close()
+
+
+@pytest.mark.asyncio
+async def test_pool_history_is_authenticated_on_demand_and_keeps_config_and_origin_separate(tmp_path):
+    from scheduler.policy import identity,node_ref
+    client,manager,store=await make_client(tmp_path)
+    try:
+        assert (await client.get('/api/pool?group=1')).status==401
+        await client.post('/api/login',json={'password':'test-password-long-enough'},headers={'Origin':'http://localhost'})
+        store.state['sources']=[{'slot':1,'uid':identity(),'name':'source','url':'https://private.example/secret','enabled':True}]
+        store.state['nodes']={'a':{'id':'a','source':1,'name':'a','disabled':False}}
+        class Records:
+            latest={}
+            calls=[]
+            def record(self,owner,node,origin,data):self.config=data['config']
+            def query(self,owner,hours,ref):
+                self.calls.append(ref)
+                base={'config':self.config,'method':'http-get-headers','origin':'running','target':'https://test/','attempts':10,'successes':9,'mean_ms':100,'variation_ms':5,'points':[{'time':1}]}
+                return {'series':[dict(base,origin='candidate',mean_ms=20),dict(base,config='old',mean_ms=1),base]}
+        history=Records();manager.controller.history=history
+        manager.controller.record_quality(store.state['groups'][0],'a','running',{})
+        async def forbidden(*args):raise AssertionError('pool display must not send probes')
+        manager.controller.prober.observe=forbidden
+        response=await client.get('/api/pool?group=1');body=await response.json()
+        ref=node_ref(store.state,store.state['nodes']['a'])
+        assert body['summaries'][ref]['mean_ms']==100
+        assert body['summaries'][ref]['origin']=='running'
+        assert history.calls==[ref]
+        assert 'private.example' not in await response.text()
+    finally:
+        await client.close();store.close()

@@ -1,7 +1,7 @@
 'use strict';
 let csrf = '', state = null, activeTab = 'groups', refreshTimer, dialogSubmit;
 const operations = new Map();
-let layout='cards', sourceFilter='', qualityContext=null, qualitySequence=0;
+let layout='cards', sourceFilter='', qualityContext=null, qualitySequence=0, scopeSequence=0;
 const selectedNodes=new Set();
 try {layout=localStorage.getItem('pem-layout')==='table'?'table':'cards';}catch{}
 
@@ -218,7 +218,7 @@ function formDialog(title, fields, submit, submitLabel = '确认') {
   hideHelp();
   $('dialog-title').textContent = title; $('dialog-fields').innerHTML = fields; $('dialog-form').querySelector('[type=submit]').textContent = submitLabel; dialogSubmit = submit; $('dialog').showModal();
 }
-function clearDialog() { $('dialog').classList.remove('pool-dialog'); $('dialog-fields').replaceChildren(); dialogSubmit = null; }
+function clearDialog() { scopeSequence++; $('dialog').classList.remove('pool-dialog'); $('dialog-fields').replaceChildren(); dialogSubmit = null; }
 function closeDialog() { if ($('dialog').open) $('dialog').close(); clearDialog(); }
 function guarded(fn) { return (...args) => Promise.resolve(fn(...args)).catch(e=>message(e.message)); }
 $('login-form').onsubmit = guarded(async e=>{e.preventDefault(); const password=e.target.elements.password.value; const result=await api('/api/login',{password}); csrf=result.csrf; e.target.reset(); await authenticated();});
@@ -297,12 +297,13 @@ function openScope(id,recommended){
   formDialog(recommended?'自动优选 · 确认节点池':'手动配置节点池',`<p>勾选多个节点组成可用池；正常保持一个，故障时在池内切换。保存后重新验证，通过才启用。</p>${recommended?`<p class="notice">已按本次检查结果推荐 ${recommended.length} 个节点。排序先看 HTTP 检查失败数，再看较慢目标的 HTTP 延迟和 UDP 耗时；单次评估不代表长期稳定。</p>`:''}<label>节点池来源<select name="scope_mode" id="scope-mode"><option value="all">全部已启用订阅</option><option value="sources">指定订阅（含以后新增节点）</option><option value="nodes">手动勾选多个节点</option></select></label><div class="pool-filters"><input id="scope-search" type="search" placeholder="搜索节点或订阅"><label><input id="scope-qualified" type="checkbox">只看上次评估通过的节点</label></div><div id="scope-options" class="scope-options"></div><div id="scope-notice" class="notice"></div><label><input type="checkbox" name="confirm_disconnect">若当前节点被移出，我确认断开已有连接</label><p class="status-note">延迟包含代理建连，显示同次测试中较慢 HTTP 目标的耗时。历史通过比例与波动来自单独目标和来源，不是真实丢包率；没有记录就显示未知。时间较早的评估需复验。固定或暂停状态不会因保存解除。</p>`,v=>action('group_scope',{group:id,scope:{mode:v.scope_mode,ids:v.scope_ids||[]},confirm_disconnect:v.confirm_disconnect==='on'}),'保存并验证节点池');
   $('dialog').classList.add('pool-dialog');
   $('scope-mode').value='nodes';
-  const selected=new Set(recommended|| (scope.mode==='nodes'?scope.ids:[]));
+  const selected=new Set(recommended|| (scope.mode==='nodes'?scope.ids:[])),selectedSources=new Set(scope.mode==='sources'?scope.ids:[]);
+  const sequence=++scopeSequence;let historyMap={},historyStatus='loading';
   const rows=Object.values(state.nodes).map(n=>poolNode(g,n)).sort((a,b)=>Number(b.qualified)-Number(a.qualified)||(a.ms??Infinity)-(b.ms??Infinity)||Number(b.n.hint_us)-Number(a.n.hint_us));
   const draw=()=>{
     const mode=$('scope-mode').value;
     if(mode==='nodes'){
-      const body=rows.map(r=>{const {n,evaluation:e}=r,h=e?.history;return `<tr data-pool-row data-qualified="${r.qualified}"><td><label><input type="checkbox" name="ids" value="${esc(n.ref)}" ${selected.has(n.ref)?'checked':''}>${esc(n.name)}</label><small>${esc(state.sources.find(s=>s.slot===n.source)?.name||'')}</small></td><td>${r.time?(r.qualified?'上次评估通过':'上次未通过'):'未评估'}<br><small>${esc(r.reason)}<br>${r.time?date(r.time):''}</small></td><td>${r.ms==null?'—':r.ms+' ms'}<br><small>较慢 HTTP 目标${e?.http_failed?' · '+e.http_failed+' 次 HTTP 检查失败':''}</small></td><td>${h?`${h.successes}/${h.attempts} 次检查通过<br>波动 ${h.variation_ms??'—'} ms<br><small>${esc(h.target)} · ${h.origin==='running'?'运行检查':'候选检查'}</small>`:'暂无历史统计'}<br><button type="button" class="quiet" data-pool-quality="${esc(n.ref)}">质量详情</button></td></tr>`;}).join('');
+      const body=rows.map(r=>{const {n,evaluation:e}=r,h=Object.hasOwn(historyMap,n.ref)?historyMap[n.ref]:e?.history;return `<tr data-pool-row data-qualified="${r.qualified}"><td><label><input type="checkbox" name="ids" value="${esc(n.ref)}" ${selected.has(n.ref)?'checked':''}>${esc(n.name)}</label><small>${esc(state.sources.find(s=>s.slot===n.source)?.name||'')}</small></td><td>${r.time?(r.qualified?'上次评估通过':'上次未通过'):'未评估'}<br><small>${esc(r.reason)}<br>${r.time?date(r.time):''}</small></td><td>${r.ms==null?'—':r.ms+' ms'}<br><small>较慢 HTTP 目标${e?.http_failed?' · '+e.http_failed+' 次 HTTP 检查失败':''}</small></td><td>${h?`${h.successes}/${h.attempts} 次检查通过<br>波动 ${h.variation_ms??'—'} ms<br><small>${esc(h.target)} · ${h.origin==='running'?'运行检查':'候选检查'}</small>`:(historyStatus==='loading'?'正在读取已有记录…':historyStatus==='error'?'历史暂不可读':Object.hasOwn(historyMap,n.ref)?'暂无同配置历史统计':'尚未读取，点击详情')}<br><button type="button" class="quiet" data-pool-quality="${esc(n.ref)}">质量详情</button></td></tr>`;}).join('');
       const stale=[...selected].filter(ref=>!rows.some(r=>r.n.ref===ref));
       $('scope-options').innerHTML=`<div class="table-wrap"><table><thead><tr><th>选择 / 节点 / 订阅</th><th>出口验证</th><th>延迟</th><th>稳定性记录（最近24h）</th></tr></thead><tbody>${body}</tbody></table></div>${stale.map(ref=>`<label><input type="checkbox" name="ids" value="${esc(ref)}" checked>已失效选择（保留）</label>`).join('')}`;
       $('scope-options').querySelectorAll('[name=ids]').forEach(box=>box.onchange=()=>box.checked?selected.add(box.value):selected.delete(box.value));
@@ -310,13 +311,15 @@ function openScope(id,recommended){
     }else if(mode==='sources'){
       const sources=state.sources.map(s=>({id:s.uid,name:s.name}));
       if(scope.mode==='sources')for(const ref of scope.ids)if(!sources.some(s=>s.id===ref))sources.push({id:ref,name:'已失效的订阅选择（保留）'});
-      $('scope-options').innerHTML=sources.map(s=>`<label><input type="checkbox" name="ids" value="${esc(s.id)}" ${scope.mode==='sources'&&scope.ids.includes(s.id)?'checked':''}>${esc(s.name)}</label>`).join('');
+      $('scope-options').innerHTML=sources.map(s=>`<label><input type="checkbox" name="ids" value="${esc(s.id)}" ${selectedSources.has(s.id)?'checked':''}>${esc(s.name)}</label>`).join('');
+      $('scope-options').querySelectorAll('[name=ids]').forEach(box=>box.onchange=()=>box.checked?selectedSources.add(box.value):selectedSources.delete(box.value));
     }else $('scope-options').innerHTML='<p>使用全部已启用订阅的未禁用节点。</p>';
     $('scope-notice').textContent=`当前节点：${state.nodes[g.node]?.name||'无合格节点'}。当前节点被移出时先断开；无可用当前节点时保存后立即查找。`;
     $('scope-qualified').disabled=mode!=='nodes';filter();
   };
   const filter=()=>{const text=$('scope-search').value.toLowerCase(),only=$('scope-qualified').checked;$('scope-options').querySelectorAll('[data-pool-row]').forEach(r=>r.hidden=!r.textContent.toLowerCase().includes(text)||(only&&r.dataset.qualified!=='true'));if($('scope-mode').value==='sources')$('scope-options').querySelectorAll('label').forEach(l=>l.hidden=!l.textContent.toLowerCase().includes(text));};
   $('scope-mode').onchange=draw;$('scope-search').oninput=filter;$('scope-qualified').onchange=filter;draw();
+  api('/api/pool?group='+encodeURIComponent(id)).then(result=>{if(sequence!==scopeSequence||!$('dialog').open)return;if(result.group_uid&&result.group_uid!==g.uid)return;historyMap=result.summaries||{};historyStatus=result.error?'error':'ready';draw();}).catch(()=>{if(sequence===scopeSequence&&$('dialog').open){historyStatus='error';draw();}});
 }
 function closeQuality(){qualitySequence++;qualityContext=null;if($('quality-dialog')?.open)$('quality-dialog').close();}
 function openQuality(context){qualityContext={...context,hours:24};$('quality-dialog').showModal();renderQuality().catch(e=>message(e.message));}
