@@ -6,7 +6,7 @@ const selectedNodes=new Set();
 try {layout=localStorage.getItem('pem-layout')==='table'?'table':'cards';}catch{}
 
 let operationSession = 0;
-const operationNames = {source_add:'添加订阅', source_update:'编辑订阅', source_refresh:'刷新订阅', source_toggle:'更改订阅状态', source_delete:'删除订阅', group_switch:'切换出口', group_check:'检测出口', group_resume:'恢复分组', group_pause:'暂停分组', group_pin:'更改节点固定方式', group_scope:'编辑可用节点清单', group_retry:'立即重试', group_add:'新建分组', group_delete:'删除分组', settings:'保存设置', node_update:'更新节点'};
+const operationNames = {source_add:'添加订阅', source_update:'编辑订阅', source_refresh:'刷新订阅', source_toggle:'更改订阅状态', source_delete:'删除订阅', group_switch:'切换出口', group_check:'检测出口', group_resume:'恢复分组', group_pause:'暂停分组', group_pin:'更改节点固定方式', group_scope:'编辑可用节点清单', group_retry:'立即重试',group_evaluate:'评估并推荐节点池', group_add:'新建分组', group_delete:'删除分组', settings:'保存设置', node_update:'更新节点'};
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const date = value => value ? new Date(value * 1000).toLocaleString('zh-CN') : '尚未验证';
@@ -72,7 +72,9 @@ async function waitForJob(job, operation) {
         }
       } catch { operation.detail+=' 页面状态暂时刷新失败，请稍后重试。'; }
       if (operation.session !== operationSession) return;
-      renderOperations(); return;
+      renderOperations();
+      if(result.result?.outcome==='evaluated' && !$('dialog').open)openScope(result.result.group,result.result.selection.recommended);
+      return;
     }
     operation.detail=result.message&&result.message!=='操作已排队'&&result.message!=='操作已完成'?result.message:'排队或处理中；节点检测可能需要数分钟，请勿重复提交。'; renderOperations();
   }
@@ -155,7 +157,8 @@ function renderGroups() {
       helpButton('switch-'+g.id,'更换节点',`data-switch="${esc(g.id)}"`,'自动选择或指定新的代理节点，验证合格后才使用。切换会断开已有连接；请先启用分组并解除固定。'),
       helpButton('pause-'+g.id,g.paused?'启用分组':'暂停分组',`data-action="${g.paused?'group_resume':'group_pause'}" data-group="${esc(g.id)}"`,g.paused?'重新启用并等待验证，验证通过前仍不能使用。':'停止这个代理入口并断开已有连接，直到你再次启用。'),
       helpButton('pin-'+g.id,g.pinned?'允许自动换节点':'固定当前节点',`data-pin="${esc(g.id)}" aria-disabled="${!g.pinned&&!g.node}"`,g.pinned?'解除固定；正常时保持当前节点，满足切换条件后才寻找替代节点。':!g.node?'请先等待分组获得节点，再固定当前节点。':'保持当前节点，不自动更换；故障或验证未通过时停止转发。固定节点不代表固定公网 IP。'),
-      helpButton('scope-'+g.id,'可用清单',`data-scope="${esc(g.id)}"`,'指定本组允许使用的订阅或节点；移出当前节点会断开连接。'),
+      helpButton('auto-pool-'+g.id,'自动优选',`data-evaluate="${esc(g.id)}"`,'按需评估当前允许范围，结合本次延迟推荐最多三个节点，确认保存后组成节点池。'),
+      helpButton('scope-'+g.id,'手动组池',`data-scope="${esc(g.id)}"`,'指定本组允许使用的订阅或节点；移出当前节点会断开连接。'),
       helpButton('traffic-'+g.id,'流量用量',`data-traffic-group="${esc(g.uid)}"`,'按需查看今日、本月和累计用量；不发起测速。'),
       helpButton('quality-'+g.id,'连接质量',`data-quality-group="${esc(g.id)}"`,'查看运行检查历史，或独立测试当前节点；手动测试不修改业务分组。'),
       helpButton('retry-'+g.id,'立即重试',`data-action="group_retry" data-group="${esc(g.id)}"`,'在允许范围内立即尝试一轮；没有合格节点后按1、5、15分钟放慢。'),
@@ -215,7 +218,7 @@ function formDialog(title, fields, submit, submitLabel = '确认') {
   hideHelp();
   $('dialog-title').textContent = title; $('dialog-fields').innerHTML = fields; $('dialog-form').querySelector('[type=submit]').textContent = submitLabel; dialogSubmit = submit; $('dialog').showModal();
 }
-function clearDialog() { $('dialog-fields').replaceChildren(); dialogSubmit = null; }
+function clearDialog() { $('dialog').classList.remove('pool-dialog'); $('dialog-fields').replaceChildren(); dialogSubmit = null; }
 function closeDialog() { if ($('dialog').open) $('dialog').close(); clearDialog(); }
 function guarded(fn) { return (...args) => Promise.resolve(fn(...args)).catch(e=>message(e.message)); }
 $('login-form').onsubmit = guarded(async e=>{e.preventDefault(); const password=e.target.elements.password.value; const result=await api('/api/login',{password}); csrf=result.csrf; e.target.reset(); await authenticated();});
@@ -243,6 +246,7 @@ document.addEventListener('click',guarded(async e=>{
   if(b.dataset.trafficGroup)openTraffic({group:b.dataset.trafficGroup});
   if(b.dataset.trafficNode)openTraffic({node:b.dataset.trafficNode});
   if(b.dataset.scope)openScope(b.dataset.scope);
+  if(b.dataset.evaluate){if(confirm('按需评估当前允许范围（最多100个候选），会使用订阅流量；完成后推荐节点池供你确认，不立即切换业务节点。'))await action('group_evaluate',{group:b.dataset.evaluate});}
   if(b.dataset.qualityGroup)openQuality({group:b.dataset.qualityGroup});
   if(b.dataset.qualityNode)openQuality({node:b.dataset.qualityNode});
   if(b.dataset.cancelTest){await api('/api/jobs/'+b.dataset.cancelTest+'/cancel',{});message('已请求停止，将在当前检查结束后停止。');}
@@ -279,19 +283,40 @@ $('backup').onclick=guarded(async()=>{if(confirm('备份含订阅与节点秘密
 $('diagnostics').onclick=guarded(async()=>download(await api('/api/diagnostics'),'pem-diagnostics.json'));
 $('restore').onclick=guarded(async()=>{const f=$('restore-file').files[0]; if(!f) throw new Error('请先选择备份'); if(!confirm('恢复配置会停止全部代理并覆盖现有配置。旧版本备份将恢复为全部订阅范围；新增质量历史保留并标记恢复时间。确认已保存当前配置？')) return; const {job}=await api('/api/restore',JSON.parse(await f.text())); await waitForJob(job);});
 
-function openScope(id){
+function poolNode(g,n){
+  const evaluation=g.last_evaluation?.attempts?.find(a=>a.node_ref===n.ref),p=n.last_probe;
+  const newer=p?.time>(evaluation?.time||0),samples=p?.samples||[];
+  const ms=newer||!evaluation?Math.max(...samples.filter(s=>s.method==='http-get-headers'&&s.ok&&s.ms!=null).map(s=>s.ms),-1):evaluation.http_ms;
+  const enabled=!n.disabled&&state.sources.some(s=>s.slot===n.source&&s.enabled);
+  const conflict=state.groups.some(other=>other.uid!==g.uid&&[...(other.tcp_ips||[]),...(other.udp_ips||[])].some(ip=>[...(p?.tcp_ips||[]),...(p?.udp_ips||[])].includes(ip)));
+  return {n,evaluation,ms:ms>=0?ms:null,qualified:enabled&&!conflict&&(newer||!evaluation?!!p?.us:!!evaluation.eligible),
+    reason:!enabled?'节点或订阅已停用':conflict?'出口与其他分组重复':newer||!evaluation?p?.reason||'未评估':evaluation.reason,time:newer||!evaluation?p?.time:evaluation.time};
+}
+function openScope(id,recommended){
   const g=state.groups.find(g=>g.id===id),scope=g.scope||{mode:'all',ids:[]};
-  formDialog('可用节点清单',`<p>当前节点：${esc(state.nodes[g.node]?.name||'无合格节点')}。正常时保持，故障后只在此范围内选择。</p><label>允许使用的范围<select name="scope_mode" id="scope-mode"><option value="all">全部已启用订阅</option><option value="sources">指定订阅（含以后新增节点）</option><option value="nodes">指定节点（配置变化需重新选择）</option></select></label><input id="scope-search" type="search" placeholder="筛选可选择的订阅或节点"><div id="scope-options" class="scope-options"></div><div id="scope-notice" class="notice"></div><label><input type="checkbox" name="confirm_disconnect">若当前节点被移出，我确认断开已有连接</label><p class="muted">固定或手动暂停不会因保存清单而解除。失效的旧选择会保留显示，不自动扩大范围。</p>`,v=>action('group_scope',{group:id,scope:{mode:v.scope_mode,ids:v.scope_ids||[]},confirm_disconnect:v.confirm_disconnect==='on'}),'保存清单');
-  $('scope-mode').value=scope.mode;
+  formDialog(recommended?'自动优选 · 确认节点池':'手动配置节点池',`<p>勾选多个节点组成可用池；正常保持一个，故障时在池内切换。保存后重新验证，通过才启用。</p>${recommended?`<p class="notice">已按本次检查结果推荐 ${recommended.length} 个节点。排序先看 HTTP 检查失败数，再看较慢目标的 HTTP 延迟和 UDP 耗时；单次评估不代表长期稳定。</p>`:''}<label>节点池来源<select name="scope_mode" id="scope-mode"><option value="all">全部已启用订阅</option><option value="sources">指定订阅（含以后新增节点）</option><option value="nodes">手动勾选多个节点</option></select></label><div class="pool-filters"><input id="scope-search" type="search" placeholder="搜索节点或订阅"><label><input id="scope-qualified" type="checkbox">只看上次评估通过的节点</label></div><div id="scope-options" class="scope-options"></div><div id="scope-notice" class="notice"></div><label><input type="checkbox" name="confirm_disconnect">若当前节点被移出，我确认断开已有连接</label><p class="status-note">延迟包含代理建连，显示同次测试中较慢 HTTP 目标的耗时。历史通过比例与波动来自单独目标和来源，不是真实丢包率；没有记录就显示未知。时间较早的评估需复验。固定或暂停状态不会因保存解除。</p>`,v=>action('group_scope',{group:id,scope:{mode:v.scope_mode,ids:v.scope_ids||[]},confirm_disconnect:v.confirm_disconnect==='on'}),'保存并验证节点池');
+  $('dialog').classList.add('pool-dialog');
+  $('scope-mode').value='nodes';
+  const selected=new Set(recommended|| (scope.mode==='nodes'?scope.ids:[]));
+  const rows=Object.values(state.nodes).map(n=>poolNode(g,n)).sort((a,b)=>Number(b.qualified)-Number(a.qualified)||(a.ms??Infinity)-(b.ms??Infinity)||Number(b.n.hint_us)-Number(a.n.hint_us));
   const draw=()=>{
     const mode=$('scope-mode').value;
-    const choices=mode==='sources'?state.sources.map(s=>({id:s.uid,name:s.name})):Object.values(state.nodes).map(n=>({id:n.ref,name:n.name+' · '+(state.sources.find(s=>s.slot===n.source)?.name||'')}));
-    if(scope.mode===mode)for(const id of scope.ids)if(!choices.some(x=>x.id===id))choices.push({id,name:'已失效选择（保留以避免自动扩大范围）'});
-    $('scope-options').innerHTML=mode==='all'?'<p>使用全部已启用订阅的未禁用节点。</p>':choices.map(x=>`<label><input type="checkbox" name="ids" value="${esc(x.id)}" ${scope.mode===mode&&scope.ids.includes(x.id)?'checked':''}>${esc(x.name)}</label>`).join('');
-    $('scope-notice').textContent='当前节点被移出时会先断开连接，再从新范围验证选择；找不到合格节点就暂停。';
+    if(mode==='nodes'){
+      const body=rows.map(r=>{const {n,evaluation:e}=r,h=e?.history;return `<tr data-pool-row data-qualified="${r.qualified}"><td><label><input type="checkbox" name="ids" value="${esc(n.ref)}" ${selected.has(n.ref)?'checked':''}>${esc(n.name)}</label><small>${esc(state.sources.find(s=>s.slot===n.source)?.name||'')}</small></td><td>${r.time?(r.qualified?'上次评估通过':'上次未通过'):'未评估'}<br><small>${esc(r.reason)}<br>${r.time?date(r.time):''}</small></td><td>${r.ms==null?'—':r.ms+' ms'}<br><small>较慢 HTTP 目标${e?.http_failed?' · '+e.http_failed+' 次 HTTP 检查失败':''}</small></td><td>${h?`${h.successes}/${h.attempts} 次检查通过<br>波动 ${h.variation_ms??'—'} ms<br><small>${esc(h.target)} · ${h.origin==='running'?'运行检查':'候选检查'}</small>`:'暂无历史统计'}<br><button type="button" class="quiet" data-pool-quality="${esc(n.ref)}">质量详情</button></td></tr>`;}).join('');
+      const stale=[...selected].filter(ref=>!rows.some(r=>r.n.ref===ref));
+      $('scope-options').innerHTML=`<div class="table-wrap"><table><thead><tr><th>选择 / 节点 / 订阅</th><th>出口验证</th><th>延迟</th><th>稳定性记录（最近24h）</th></tr></thead><tbody>${body}</tbody></table></div>${stale.map(ref=>`<label><input type="checkbox" name="ids" value="${esc(ref)}" checked>已失效选择（保留）</label>`).join('')}`;
+      $('scope-options').querySelectorAll('[name=ids]').forEach(box=>box.onchange=()=>box.checked?selected.add(box.value):selected.delete(box.value));
+      $('scope-options').querySelectorAll('[data-pool-quality]').forEach(b=>b.onclick=()=>openQuality({node:b.dataset.poolQuality}));
+    }else if(mode==='sources'){
+      const sources=state.sources.map(s=>({id:s.uid,name:s.name}));
+      if(scope.mode==='sources')for(const ref of scope.ids)if(!sources.some(s=>s.id===ref))sources.push({id:ref,name:'已失效的订阅选择（保留）'});
+      $('scope-options').innerHTML=sources.map(s=>`<label><input type="checkbox" name="ids" value="${esc(s.id)}" ${scope.mode==='sources'&&scope.ids.includes(s.id)?'checked':''}>${esc(s.name)}</label>`).join('');
+    }else $('scope-options').innerHTML='<p>使用全部已启用订阅的未禁用节点。</p>';
+    $('scope-notice').textContent=`当前节点：${state.nodes[g.node]?.name||'无合格节点'}。当前节点被移出时先断开；无可用当前节点时保存后立即查找。`;
+    $('scope-qualified').disabled=mode!=='nodes';filter();
   };
-  $('scope-mode').onchange=draw;draw();
-  $('scope-search').oninput=e=>{const filter=e.target.value.toLowerCase();$('scope-options').querySelectorAll('label').forEach(l=>l.hidden=!l.textContent.toLowerCase().includes(filter));};
+  const filter=()=>{const text=$('scope-search').value.toLowerCase(),only=$('scope-qualified').checked;$('scope-options').querySelectorAll('[data-pool-row]').forEach(r=>r.hidden=!r.textContent.toLowerCase().includes(text)||(only&&r.dataset.qualified!=='true'));if($('scope-mode').value==='sources')$('scope-options').querySelectorAll('label').forEach(l=>l.hidden=!l.textContent.toLowerCase().includes(text));};
+  $('scope-mode').onchange=draw;$('scope-search').oninput=filter;$('scope-qualified').onchange=filter;draw();
 }
 function closeQuality(){qualitySequence++;qualityContext=null;if($('quality-dialog')?.open)$('quality-dialog').close();}
 function openQuality(context){qualityContext={...context,hours:24};$('quality-dialog').showModal();renderQuality().catch(e=>message(e.message));}

@@ -269,3 +269,53 @@ async def test_cancel_during_business_revalidation_never_grants_candidate(contro
     result=await c.action('group_switch',{'group':'1','node':'c'},cancel=cancel)
     assert result['outcome']=='cancelled' and g['node'] is None
     assert not c.gateway.allowed('1',c.gateway.leases['1'].generation)
+
+
+@pytest.mark.asyncio
+async def test_evaluation_recommends_multiple_by_latency_without_switching(controller):
+    from test_controller import good
+    c=controller;await c.tick();g=c.group('2');generation=c.gateway.leases['2'].generation
+    for name,delay in [('c',80),('d',20),('e',50)]:
+        if name not in c.state['nodes']:c.state['nodes'][name]={**c.state['nodes']['c'],'id':name,'name':name}
+        c.prober.results[name]=good({'c':'9.9.9.9','d':'4.4.4.4','e':'8.8.4.4'}[name])
+        c.prober.results[name].samples=[{'method':'http-get-headers','ok':True,'ms':delay,'target':'https://test/'}]
+    result=await c.action('group_evaluate',{'group':'2'})
+    assert result['outcome']=='evaluated' and g['node']=='b'
+    assert c.gateway.allowed('2',generation)
+    names={node_ref(c.state,n):n['name'] for n in c.state['nodes'].values()}
+    assert [names[r] for r in result['selection']['recommended']]==['d','e','c']
+    assert g['last_evaluation']['qualified']==4  # b plus the three independent candidates; a conflicts with group1.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cancel_revalidation',[False,True])
+async def test_failed_revalidation_immediately_revalidates_and_restores_previous(controller,cancel_revalidation):
+    c=controller;await c.tick();g=c.group('1');cancel=asyncio.Event();original=c.prober.observe
+    async def probe(upstream,settings):
+        if upstream[1]==20001 and c.core.selected[1]=='c':
+            if cancel_revalidation:cancel.set()
+            return Observation(False,False)
+        return await original(upstream,settings)
+    c.prober.observe=probe
+    result=await c.action('group_switch',{'group':'1','node':'c'},cancel=cancel)
+    assert result['outcome']==('cancelled' if cancel_revalidation else 'not_applied')
+    assert g['node']=='a' and c.core.selected[1]=='a' and g['next_retry_at']==0
+    assert c.gateway.allowed('1',c.gateway.leases['1'].generation)
+    assert result['selection']['attempts'][0]['previous_restored']
+
+
+@pytest.mark.asyncio
+async def test_applied_outcome_is_durable_before_later_queued_pause(controller):
+    c=controller;await c.tick();original=c.prober.observe;tasks=[]
+    async def later_pause():await c.action('group_pause',{'group':'1'})
+    async def probe(upstream,settings):
+        if upstream[1]==20001 and c.core.selected[1]=='c':
+            tasks.append(asyncio.create_task(later_pause()))
+            await asyncio.sleep(0)
+        return await original(upstream,settings)
+    c.prober.observe=probe
+    result=await c.action('group_switch',{'group':'1','node':'c'})
+    await asyncio.gather(*tasks)
+    assert result['outcome']=='applied'
+    assert c.group('1')['last_action']['outcome']=='applied'
+    assert c.group('1')['paused'] and not c.gateway.allowed('1',c.gateway.leases['1'].generation)

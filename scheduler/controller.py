@@ -220,7 +220,8 @@ class Controller:
         if explicit and (explicit not in self.state['nodes'] or not eligible(self.state, group, self.state['nodes'][explicit])):
             raise ValueError('所选节点不在本组允许范围内，或节点/订阅已停用')
         candidates = [n for n in self.state['nodes'].values() if eligible(self.state, group, n)]
-        candidates.sort(key=lambda n: (not n["hint_us"], n["priority"], n["id"]))
+        order={ref:i for i,ref in enumerate(group['scope']['ids'])} if group['scope']['mode']=='nodes' else {}
+        candidates.sort(key=lambda n: (order.get(node_ref(self.state,n),0),not n["hint_us"], n["priority"], n["id"]))
         if explicit:
             candidates = [n for n in candidates if n["id"] == explicit]
         elif candidates:
@@ -424,6 +425,7 @@ class Controller:
     async def manual_search(self, kind, data, cancel=None, progress=None, scope_saved=False):
         """One candidate per lock acquisition; scheduled lease validation can run between candidates."""
         cancel = cancel or asyncio.Event()
+        evaluating = kind == 'group_evaluate'
         async with self.lock:
             if self.maintenance:
                 raise ValueError('维护期间不能选择节点')
@@ -441,7 +443,8 @@ class Controller:
             if explicit and (explicit not in self.state['nodes'] or not eligible(self.state,group,self.state['nodes'][explicit])):
                 raise ValueError('所选节点不在本组允许范围内，或节点/订阅已停用')
             nodes = [n for n in self.state['nodes'].values() if eligible(self.state,group,n)]
-            nodes.sort(key=lambda n:(not n['hint_us'],n['priority'],n['id']))
+            order={ref:i for i,ref in enumerate(group['scope']['ids'])} if group['scope']['mode']=='nodes' else {}
+            nodes.sort(key=lambda n:(order.get(node_ref(self.state,n),0),not n['hint_us'],n['priority'],n['id']))
             if explicit:
                 nodes = [self.state['nodes'][explicit]]
             refs = [(n['id'],node_ref(self.state,n)) for n in nodes[:100]]
@@ -474,18 +477,47 @@ class Controller:
                     reason = '出口与其他分组重复，不能作为独立出口' if conflict else result.reason
                     attempt = {'node_ref':ref,'name':node['name'],'reason':reason,
                                'tcp_ok':result.tcp_ok,'udp_ok':result.udp_ok,'identity_errors':result.identity_errors,
-                               'country_errors':result.country_errors,'conflict':conflict,'applied':False}
+                               'country_errors':result.country_errors,'conflict':conflict,'applied':False,'eligible':result.us and not conflict,'time':self.wall(),
+                               'http_ms':max((s['ms'] for s in result.samples if s['method']=='http-get-headers' and s['ok'] and s.get('ms') is not None),default=None),
+                               'http_failed':sum(not s['ok'] for s in result.samples if s['method']=='http-get-headers'),
+                               'udp_ms':max((s['ms'] for s in result.samples if s['method']=='stun-with-retry' and s['ok'] and s.get('ms') is not None),default=None)}
+                    if evaluating and self.history:
+                        try:
+                            history=await asyncio.to_thread(self.history.query,'',24,ref)
+                            expected=hashlib.sha256(json.dumps([self.history_epoch]+[settings[k] for k in ('tcp_check_urls','tcp_identity_urls','stun_servers','country_url')],sort_keys=True).encode()).hexdigest()[:16]
+                            prior=[s for s in history['series'] if s['config']==expected and s['method']=='http-get-headers' and s['origin'] in ('running','candidate')]
+                            prior.sort(key=lambda s:(s['origin']!='running',-(s['points'][-1]['time'] if s['points'] else 0)))
+                            if prior:
+                                attempt['history']={k:prior[0][k] for k in ('target','origin','attempts','successes','mean_ms','variation_ms')}
+                        except Exception:
+                            attempt['history_error']='历史暂不可读'
                     selection['attempts'].append(attempt);selection['checked']+=1
                     if cancel.is_set():
                         outcome,message='cancelled','已停止查找；本次检查结束，未应用该候选'
                         break
-                    if result.us and not conflict:
+                    if not evaluating and result.us and not conflict:
+                        previous_node=group.get('node')
+                        previous_lease=self.gateway.leases.get(group['id'])
+                        previous_available=bool(previous_node and previous_lease and self.gateway.allowed(group['id'],previous_lease.generation))
                         selection['stage']='正在复验业务入口'
                         if progress:progress(f"{node['name']} 候选验证通过，正在复验业务入口")
                         if await self.accept(group,node_id,result,revalidate=True,cancel=cancel):
                             attempt.update(applied=True,reason='已通过完整验证并应用')
                             outcome,message='applied',f"已应用节点：{node['name']}；业务入口可用"
-                            break
+                            selection.update(current=None,stage='已结束',finished=self.wall())
+                            if scope_saved:
+                                outcome,message='saved_available','可用节点清单已保存；'+message
+                            # Commit the historical operation result with the actual grant, before
+                            # releasing the lock to a later pause/edit operation.
+                            completed=self.group_outcome(group,kind,outcome,message,selection)
+                            self.event('operation',message,group['id'])
+                            return completed
+                        if previous_available and previous_node in self.state['nodes'] and eligible(self.state,group,self.state['nodes'][previous_node]):
+                            selection['stage']='正在重新验证并恢复原节点'
+                            if progress:progress('候选未应用，正在重新验证并恢复原节点')
+                            await self.core.select(int(group['id']),previous_node)
+                            restored=await self.observe(group,previous_node)
+                            attempt['previous_restored']=await self.accept(group,previous_node,restored)
                         if cancel.is_set():
                             outcome,message='cancelled','已停止查找，未提交候选节点'
                             break
@@ -506,6 +538,14 @@ class Controller:
                 elif cancel.is_set() and outcome=='not_applied':
                     outcome,message='cancelled','已停止查找；未应用新的候选节点'
                 selection.update(current=None,stage='已结束',finished=self.wall())
+                if evaluating and outcome=='not_applied':
+                    qualified=[a for a in selection['attempts'] if a['eligible']]
+                    qualified.sort(key=lambda a:(a['http_failed'],a['http_ms'] if a['http_ms'] is not None else float('inf'),a['udp_ms'] if a['udp_ms'] is not None else float('inf')))
+                    selection['recommended']=[a['node_ref'] for a in qualified if a['http_ms'] is not None and a['http_failed']==0][:3]
+                    selection['qualified']=len(qualified)
+                    outcome='evaluated'
+                    message=f"已评估 {selection['checked']}/{selection['total']} 个候选，其中 {len(qualified)} 个通过本次出口检查；推荐 {len(selection['recommended'])} 个，待你确认保存节点池"
+                    current['last_evaluation']=copy.deepcopy(selection)
                 if outcome=='not_applied':
                     if selection['checked'] < selection['total']:
                         message += f"；本次检查 {selection['checked']}/{selection['total']} 个，达到单次100个上限，未检查完全部范围"
@@ -538,7 +578,7 @@ class Controller:
             self.selection_cancellations.pop(uid,None)
 
     async def action(self, kind, data, cancel=None, progress=None):
-        if kind in ('group_switch','group_retry'):
+        if kind in ('group_switch','group_retry','group_evaluate'):
             return await self.manual_search(kind,data,cancel,progress)
         result = await self._action(kind,data)
         if isinstance(result,dict) and result.pop('needs_search',False):

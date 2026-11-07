@@ -40,6 +40,7 @@ jobs:
           JSDOM_PATH=/tmp/pem-ui/node_modules/jsdom node tests/ui_quality.cjs
           JSDOM_PATH=/tmp/pem-ui/node_modules/jsdom node tests/ui_traffic.cjs
           JSDOM_PATH=/tmp/pem-ui/node_modules/jsdom node tests/ui_group_feedback.cjs
+          JSDOM_PATH=/tmp/pem-ui/node_modules/jsdom node tests/ui_pool.cjs
       - name: Build and smoke-test image
         run: |
           docker build -t pem:ci .

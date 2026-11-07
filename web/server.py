@@ -178,7 +178,7 @@ class Management:
     async def action(self, request):
         data = await request.json()
         kind = data.pop("kind")
-        cancellable = kind in ('group_switch','group_retry','group_scope')
+        cancellable = kind in ('group_switch','group_retry','group_scope','group_evaluate')
         cancel = asyncio.Event() if cancellable else None
         holder = []
         def progress(message):
