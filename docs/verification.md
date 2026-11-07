@@ -205,3 +205,13 @@
 - 固定源码 `67d5e3a163646a1dff0de437bc72602b1246f901`；原生双架构 CI https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42357120455 与发布流程 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42357451998 均成功，包含真实 Compose 验证。Release https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.3.5 ，固定镜像 `ghcr.io/youjiaxing/proxy-egress-manager:v0.3.5@sha256:fa2d155ea977f9d4c548d17934afb9c1355b6a58a0706c57a3ebf1de5520653d`，附件源码/摘要已核对。
 - 线上备份 `/root/proxy-egress-manager-deployment-backups/20261107T085809Z-pre-v0.3.5`，仅重建应用，两个核心保持运行。HTTPS登录/退出、四步流程资源、质量/流量API、原订阅与节点及来源/分组UID、原节点/范围/暂停/固定设置和检测配置保留通过。两组租约有效、实际SOCKS请求出口匹配且相互独立；既有77候选/19通过/3推荐历史保留，没有额外全量评估或应用推荐。流量逐身份不倒退、起点一致、gap=false，质量历史1004→1006。
 - 外部 DNS、可信TLS、认证和公网代理/核心/管理端口隔离验收 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42357700423 成功。线上没有为验收修改用户节点池；旅程写入、失败与恢复路径在隔离DOM fixture/CI中验证，线上只核对资源、只读配置与实际出口。
+
+## v0.3.7 简单节点面板
+
+- 根据用户参考图，将节点卡片简化为名称、醒目彩色 HTTP 延迟/失败状态、订阅和时间；详情/优先级/管理折叠。数字可单击发起独立轻量测试，无需先打开连接质量弹窗。勾选卡片高亮，原批量测试保留；测试中明确显示，批量轮询只读取已完成记录，不增加外网探测。
+- 最新有效手动失败不再回退显示较早成功，超时独立标记，来源身份变化的结果不采用；HTTP请求耗时不称 ICMP ping。未改分组映射、租约、节点池或自动调度频率。
+- 本地98 passed（7.07秒）与八组UI DOM通过。新增node_latency覆盖超时覆盖旧成功、颜色、折叠、选中高亮、单击测试/进度、来源失效结果排除及只读操作不发探测。参考图经独立视觉观察确认三列卡片、数字与Timeout和选中高亮；未将截图推断为具体点击行为，未声称浏览器截图视觉验收。
+- 独立复核发现重叠单测/批量提交会清除先前测试的running标记，v0.3.6未部署；修正版在任何写入running标记或API请求之前拒绝集合交叉，回归覆盖单测A后批测A+B不提交且A仍测试中。同步将完成判定改为服务器记录变化，避免浏览器/服务器时钟偏差；保留详情展开、保护卡片优先级编辑，前置拒绝禁用节点。针对修正由主代理核对与回归，不宣称独立重跑。
+- 修正后本地98 passed（6.95秒），固定源码 `677f54bff74066795dbc8091b0e44deb584b97d7`，发布 https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.3.7 ，双架构/真实Compose流程 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42363484916 成功。固定镜像 `ghcr.io/youjiaxing/proxy-egress-manager:v0.3.7@sha256:dda0415c01baa8b71e3558315bb8a077a2b8a95e49f8063d9a4730be7ac8fe3a`，附件源码/摘要核对一致；仅重建应用、核心保持运行。备份 `/root/proxy-egress-manager-deployment-backups/20261107T102418Z-pre-v0.3.7`。
+- 线上HTTPS认证、新节点面板资源、质量/流量API、2订阅77节点与分组UID/范围/原节点/设置完整保留；两组授权有效且真实SOCKS出口匹配、独立。仅对组1当前节点做一次独立HTTP测试，返回83.3ms、current=true，结果已写入节点状态；前后分组节点/范围不变。未进行全订阅测速或重新优选。流量累计逐身份不倒退、起点一致、gap=false；质量历史1357→1360。完整按钮行为在隔离DOM/CI验证，未将线上API验收称为浏览器点击验收。
+- 外部验收 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42363811245 首次恰逢应用重建，首页200断言失败；服务恢复后原样重跑attempt2成功，DNS/TLS/认证及公网端口隔离通过，未修改验收标准。
