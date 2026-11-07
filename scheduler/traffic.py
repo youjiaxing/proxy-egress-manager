@@ -198,8 +198,14 @@ async def metered_probe(upstream, traffic, context):
     gateway = Gateway('127.0.0.1')
     gateway.traffic = traffic
     gateway.pulse(86400)
-    await gateway.listen('probe', 0)
-    gateway.grant('probe', upstream, gateway.clock()+86400, context)
+    try:
+        await gateway.listen('probe', 0)
+        gateway.grant('probe', upstream, gateway.clock()+86400, context)
+    except Exception:
+        traffic.fail('探测计量通道不可用；原检测继续，部分用量未记录')
+        await gateway.close()
+        yield upstream
+        return
     try:
         yield ('127.0.0.1',gateway.servers['probe'].sockets[0].getsockname()[1])
     finally:

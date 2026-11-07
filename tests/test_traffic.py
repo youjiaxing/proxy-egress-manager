@@ -173,3 +173,14 @@ async def test_shutdown_waits_for_writer_and_saves_new_pending(tmp_path,monkeypa
     reopened=Traffic(tmp_path)
     q=await reopened.query();assert not q['gap'] and q['restored']==123 and q['summary']['all']['upload']==17
     await reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_meter_setup_failure_preserves_original_probe_route(tmp_path,monkeypatch):
+    t=Traffic(tmp_path)
+    async def fail(*args):raise OSError('fixture bind failure')
+    monkeypatch.setattr(Gateway,'listen',fail)
+    async with metered_probe(('original-core',20000),t,CTX) as route:
+        assert route==('original-core',20000)
+    assert t.gap and '原检测继续' in t.error
+    await t.close()
