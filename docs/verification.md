@@ -162,3 +162,14 @@
 - 真实 HTTPS 登录、按 group UID 读取、100 行分页/完整汇总、新 UI 资源和退出后统计 401 均通过；没有向真实节点额外发起手动诊断。多轮 60 秒后台保存已发生，验收时统计 12 行，最后保存时间正常、gap=false，累计已观测 303395 字节。该数字是当时采样，继续随调度增长。进程资源单次快照约 48.7 MiB / 0.06% CPU，不是峰值或容量保证。
 - 外部验收 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42342803090 成功，包含管理面 DNS/TLS/鉴权和公网端口边界。当前两组仍因国家验证未完成/无合格独立备用而不放行，未修改验证目标或绕过准入。
 - 上线时本机到 VPS 的默认路由落在异常虚拟接口，GitHub/TLS 与 SSH 出现间歇故障。仅对任务连接绑定正常物理接口后完成 SSH 核验，并为 GitHub CLI 使用任务独占回环 CONNECT 通道（TLS 端到端），不改系统路由/VPN，不关闭主机密钥校验。临时通道和 SSH 复用连接在验收结束后关闭。
+
+## v0.3.1 国家查询限流修复与质量概览
+
+- 现场重现：TCP/UDP 均取得出口地址，但 `ipwho.is` 返回 HTTP 429 / `Rate limit exceeded`，国家归属为空，出口授权无法续期。临时将现有国家查询配置改为 `https://ipapi.co/{ip}/json/` 后，组 1 完整重验通过。没有删除必需身份目标、放宽美国/双协议/独立出口条件。
+- 根因修复：国家元数据按模板与实际 IP 缓存 6 小时，最多 512 项；失败缓存 60 秒，429 按模板退避。TCP/UDP 当前身份和租约有效期仍逐轮验证。国家查询错误、部分身份目标失败及出口冲突保留具体原因。
+- 质量页把当前入口状态、延迟、失败比例、波动和带失败红标的趋势放在前面。节点、配置、来源、目标、协议仍分序列，不把检查失败率当作真实丢包；恢复记录不再混成停止转发。说明、历史候选和其他节点默认折叠。
+- 固定源码 `7adac5d0a06ab0e8c8a45c1337f90aaf5714a350`，本地固定 Mihomo 测试 86 passed，四组 UI DOM 回归通过（没有宣称浏览器截图视觉验收）。独立只读复核未发现已确认阻塞。原生双架构 CI https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42347906406 成功；发布流程 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42348459432 再次执行双架构测试及真实 Compose，成功。
+- 发布镜像 `ghcr.io/youjiaxing/proxy-egress-manager:v0.3.1@sha256:ca8af1b1256fd859af16f489d1ac94a17ae6ba996c6c54b532593da6463240ab`，附件源码和摘要匹配；VPS 已实际拉取，仅重建应用，业务核心及诊断核心未重启。升级备份 `/root/proxy-egress-manager-deployment-backups/20261107T065026Z-pre-v0.3.1` 含旧环境、Compose、一致配置及独立 traffic/quality SQLite 快照。
+- 线上验证：应用 healthy，HTTPS 认证、质量页新资源、含配置代际的质量 API、退出后 401 均通过。2 订阅、77 节点、来源与分组 UID、范围、暂停/固定设置、配置保留。逐身份核对累计用量没有倒退，统计起点相同，质量记录 518 → 526 条。组 1 租约有效，实际 SOCKS 1081 请求成功且出口匹配当前验证地址。
+- 组 2 未放行：既有候选存在必需 UDP 身份目标未响应，更新后重试的候选仍有被独立对照确认的协议故障；未绕过准入放行，页面保留最近候选原因。该状态不代表组 1 仍不可用。
+- 外部 DNS、可信 TLS、HTTP 跳转、匿名接口拒绝及公网端口隔离验收 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42348812888 成功。未单独宣称本版本匿名镜像拉取验收。
