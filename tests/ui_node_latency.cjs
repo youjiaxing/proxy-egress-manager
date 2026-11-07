@@ -25,6 +25,9 @@ async function until(fn){for(let i=0;i<200;i++){if(fn())return;await pause();}th
  assert.ok(d.querySelector('.simple-node').classList.contains('is-selected'));
  d.querySelector('.node-latency').click();await until(()=>posts.length===1);
  assert.deepEqual(posts[0],{nodes:['s/a'],test:'http'});
+ const bBox=d.querySelector('#node-cards [data-select-node="s/b"]');bBox.checked=true;bBox.dispatchEvent(new w.Event('change',{bubbles:true}));
+ d.getElementById('test-selected').click();await pause();assert.equal(posts.length,1,'overlapping batch rejected without clearing original running marker');
+ assert.equal(d.querySelector('.node-latency').textContent,'测试中…');
  assert.equal(d.querySelector('.node-latency').textContent,'测试中…');assert.equal(d.getElementById('quality-dialog').open,false);
  a.last_test={test:'http',current:true,time:now+1,samples:[{method:'http-get-headers',ok:true,ms:168}]};hold=false;
  await until(()=>d.querySelector('.node-latency').textContent==='168 ms');

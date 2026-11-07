@@ -94,7 +94,7 @@ async function refresh() {
   const active = state.groups.filter(g => g.lease_valid).length;
   const ips = new Set(state.groups.flatMap(g => [...g.tcp_ips,...g.udp_ips]));
   $('summary').innerHTML = [[active+'/'+state.groups.length,'可用分组'],[state.sources.filter(s=>s.enabled).length,'启用的订阅来源'],[Object.keys(state.nodes).length,'候选节点'],[ips.size,'已记录的出口 IP']].map(([v,t])=>`<div class="metric"><strong>${esc(v)}</strong><span>${t}</span></div>`).join('');
-  updateSourceFilter(); renderGroups(); renderSources(); if (!document.activeElement?.matches('#node-list input')) renderNodes();
+  updateSourceFilter(); renderGroups(); renderSources(); if (!document.activeElement?.matches('#node-list input,#node-cards input[data-priority]')) renderNodes();
   if (activeTab === 'history') await renderEvents();
   if (!document.querySelector('#settings input:focus, #settings textarea:focus')) fillSettings();
 }
@@ -201,7 +201,7 @@ function updateSourceFilter(){
 }
 function visibleNodes(){const filter=$('node-filter').value.toLowerCase(),usOnly=$('us-only').checked;return Object.values(state.nodes).filter(n=>(!sourceFilter||String(n.source)===sourceFilter)&&(!usOnly||n.hint_us||n.last_probe?.us)&&(n.name.toLowerCase().includes(filter)||(state.sources.find(s=>s.slot===n.source)?.name||'').toLowerCase().includes(filter)));}
 function nodeLatency(n){
-  if(testingNodes.has(n.ref||n.id)&&!(n.last_test?.test==='http'&&n.last_test.current!==false&&n.last_test.time>=testingNodes.get(n.ref||n.id)))return {text:'测试中…',tone:'pending',time:null};
+  if(testingNodes.has(n.ref||n.id)&&!(n.last_test?.test==='http'&&n.last_test.current!==false&&n.last_test.time!==(testingNodes.get(n.ref||n.id))))return {text:'测试中…',tone:'pending',time:null};
   const p=n.last_probe,t=n.last_test;
   const manual=t?.test==='http'&&t.current!==false&&(!p?.time||t.time>=p.time);
   const samples=manual?t.samples:p?.samples;
@@ -223,7 +223,8 @@ function renderNodes() {
   const select=n=>`<input class="node-select" type="checkbox" data-select-node="${esc(n.ref||n.id)}" aria-label="选择 ${esc(n.name)}" ${selectedNodes.has(n.ref||n.id)?'checked':''}>`;
   const actions=n=>`<button type="button" data-test-node="${esc(n.ref||n.id)}" ${testingNodes.has(n.ref||n.id)||n.disabled?'disabled':''}>测延迟</button><button class="quiet" data-traffic-node="${esc(n.ref||n.id)}">流量用量</button><button class="quiet" data-quality-node="${esc(n.ref||n.id)}">连接质量 / 测试</button><button class="quiet" data-disable-node="${esc(n.id)}">${n.disabled?'启用':'禁用'}</button>`;
   $('node-list').innerHTML=nodes.map(n=>`<tr><td>${select(n)}<strong>${esc(n.name)}</strong><br><small>${esc(state.sources.find(s=>s.slot===n.source)?.name||'来源 '+n.source)}</small></td><td>${nodeSummary(n)}</td><td>TCP ${esc(n.last_probe?.tcp_ips.join(', ')||'—')}<br>UDP ${esc(n.last_probe?.udp_ips.join(', ')||'—')}</td><td><input aria-label="节点优先级" type="number" min="0" max="10000" value="${n.priority}" data-priority="${esc(n.id)}"></td><td>${actions(n)}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">没有符合条件的节点</td></tr>';
-  $('node-cards').innerHTML=nodes.map(n=>{const m=nodeLatency(n),ref=n.ref||n.id;return `<article class="simple-node ${selectedNodes.has(ref)?'is-selected':''}"><div class="node-main"><label class="node-name">${select(n)}${esc(n.name)}</label><button class="node-latency latency-${m.tone}" data-test-node="${esc(ref)}" ${testingNodes.has(ref)||n.disabled?'disabled':''} title="点击测试 HTTP 请求耗时，不切换节点" aria-label="测试 ${esc(n.name)} 的延迟">${esc(m.text)}</button></div><div class="node-caption"><small>${esc(state.sources.find(s=>s.slot===n.source)?.name||'来源 '+n.source)}${n.disabled?' · 已禁用':''}</small><small>${m.time?date(m.time)+(Date.now()/1000-m.time>180?' · 旧记录':''):'尚无记录'}</small></div><details><summary>详情与管理</summary><p>${esc(n.last_probe?.reason||'尚未完成出口验证')}</p><label>节点优先级<input type="number" aria-label="节点优先级" min="0" max="10000" value="${n.priority}" data-priority="${esc(n.id)}"></label><div class="actions">${actions(n)}</div></details></article>`;}).join('')||'<p class="empty">没有符合条件的节点</p>';
+  const expandedNodes=new Set([...$('node-cards').querySelectorAll('[data-node-detail][open]')].map(el=>el.dataset.nodeDetail));
+  $('node-cards').innerHTML=nodes.map(n=>{const m=nodeLatency(n),ref=n.ref||n.id;return `<article class="simple-node ${selectedNodes.has(ref)?'is-selected':''}"><div class="node-main"><label class="node-name">${select(n)}${esc(n.name)}</label><button class="node-latency latency-${m.tone}" data-test-node="${esc(ref)}" ${testingNodes.has(ref)||n.disabled?'disabled':''} title="点击测试 HTTP 请求耗时，不切换节点" aria-label="测试 ${esc(n.name)} 的延迟">${esc(m.text)}</button></div><div class="node-caption"><small>${esc(state.sources.find(s=>s.slot===n.source)?.name||'来源 '+n.source)}${n.disabled?' · 已禁用':''}</small><small>${m.time?date(m.time)+(Date.now()/1000-m.time>180?' · 旧记录':''):'尚无记录'}</small></div><details data-node-detail="${esc(ref)}" ${expandedNodes.has(ref)?'open':''}><summary>详情与管理</summary><p>${esc(n.last_probe?.reason||'尚未完成出口验证')}</p><label>节点优先级<input type="number" aria-label="节点优先级" min="0" max="10000" value="${n.priority}" data-priority="${esc(n.id)}"></label><div class="actions">${actions(n)}</div></details></article>`;}).join('')||'<p class="empty">没有符合条件的节点</p>';
 }
 async function renderEvents() {
   const events = await api('/api/events');
@@ -467,11 +468,13 @@ async function renderQuality(cached=null){
 async function runTests(refs,test='http',group){
   if(!refs.length||refs.some(r=>!r))throw Error('请先选择有效节点');
   if(refs.length>100)throw Error('单次最多 100 个节点，请筛选后分批测试');
+  if(refs.some(ref=>testingNodes.has(ref))){message('部分节点正在测试，请等待完成后再测，不会重复提交。');return;}
+  if(refs.some(ref=>{const n=Object.values(state.nodes).find(n=>(n.ref||n.id)===ref);return !n||n.disabled||state.sources.find(s=>s.slot===n.source)?.enabled===false;}))throw Error('请只选择已启用的节点和订阅');
   const key='test:'+test+':'+refs.join(',');
   if([...operations.values()].some(o=>o.key===key&&o.running)){message('这项测试已在进行中');return;}
   if(refs.length>1&&!confirm(`将按顺序测试 ${refs.length} 个节点，只发送轻量请求。超时节点可能使等待时间较长。继续？`))return;
   const operation={key,title:test==='udp'?'手动 UDP 诊断':'独立连接检查（'+refs.length+' 个节点）',started:Date.now(),running:true,detail:'正在提交…',session:operationSession,diagnostic:true};
-  refs.forEach(ref=>testingNodes.set(ref,Date.now()/1000));renderNodes();
+  refs.forEach(ref=>testingNodes.set(ref,Object.values(state.nodes).find(n=>(n.ref||n.id)===ref)?.last_test?.time));renderNodes();
   operations.set(operation,operation);renderOperations();
   try{const {job}=await api('/api/tests',{nodes:refs,test,group});if(operation.session!==operationSession)return;operation.cancelJob=job;await waitForJob(job,operation);}
   catch(e){if(operation.session!==operationSession)return;operation.running=false;operation.detail='未能确认测试结果：'+e.message;renderOperations();}
