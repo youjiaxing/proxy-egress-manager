@@ -222,15 +222,26 @@ class Controller:
         elif candidates:
             cursor = self.candidate_cursor.get(group["id"], 0) % len(candidates)
             candidates = candidates[cursor:] + candidates[:cursor]
+        country_failures = []
+        last_failure = None
         for node in candidates[:3]:
             self.candidate_cursor[group["id"]] = self.candidate_cursor.get(group["id"], 0) + 1
             result = await self.observe(group, node["id"], candidate=True)
+            last_failure = result.reason
+            if result.country_errors:
+                country_failures.append(result.reason)
+            if result.us and (result.tcp_ips | result.udp_ips) & self.occupied(group['id']):
+                last_failure = "出口与其他分组重复，不能作为独立出口"
             if result.us and not (result.tcp_ips | result.udp_ips) & self.occupied(group["id"]):
                 if await self.accept(group, node["id"], result, revalidate=True):
                     return True
+                last_failure = (self.state['nodes'][node['id']].get('last_probe') or {}).get('reason', '业务入口复验未通过')
         step = min(group.get("retry_step", 0), 2)
         group.update(retry_step=min(step+1, 3), next_retry_at=self.wall() + (60, 300, 900)[step])
-        await self.pause(group, "没有已验证的独立美国备用出口，保留占用等待恢复")
+        reason = country_failures[0] if country_failures and len(country_failures) == len(candidates[:3]) else "没有已验证的独立美国备用出口，保留占用等待恢复"
+        if len(country_failures) != len(candidates[:3]) and last_failure:
+            reason += "；最近候选：" + last_failure
+        await self.pause(group, reason)
         self.store.save()
         return False
 

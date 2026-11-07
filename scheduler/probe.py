@@ -102,6 +102,8 @@ class Observation:
     identity_complete: bool = True
     observed_at: object = None
     samples: list = field(default_factory=list)
+    country_errors: dict = field(default_factory=dict)
+    identity_errors: list = field(default_factory=list)
 
     @property
     def complete(self):
@@ -115,11 +117,48 @@ class Observation:
     def public(self):
         return {"tcp_ok": self.tcp_ok, "udp_ok": self.udp_ok, "tcp_ips": sorted(self.tcp_ips),
                 "udp_ips": sorted(self.udp_ips), "countries": self.countries,
-                "complete": self.complete, "us": self.us, "reason": self.reason,
+                "complete": self.complete, "us": self.us, "reason": self.reason, "country_errors": self.country_errors, "identity_errors": self.identity_errors,
                 "coverage": "仅配置的 HTTPS/STUN 目标所见出口；其他目的地和地址族未知", "samples": self.samples}
 
 
 class Prober:
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.country_cache = {}
+        self.country_cooldown = {}
+
+    async def country(self, session, template, ip):
+        """Cache IP metadata, never the observed TCP/UDP identity or its lease."""
+        key = (template, ip)
+        now = self.clock()
+        cached = self.country_cache.get(key)
+        if cached and now < cached[0]:
+            return cached[1:]
+        if now < self.country_cooldown.get(template, 0):
+            return None, "国家查询服务限流，等待退避后重试"
+        code, error, ttl = None, "国家查询失败，暂时无法确认出口国家", 60
+        try:
+            async with session.get(template.replace('{ip}', ip), allow_redirects=False) as response:
+                if response.status == 429:
+                    try: retry = float(response.headers.get('Retry-After', 900))
+                    except ValueError: retry = 900
+                    self.country_cooldown[template] = now + max(60, min(3600, retry))
+                    error = "国家查询服务限流，等待退避后重试"
+                elif response.status == 200:
+                    body = await read_json(response)
+                    value = body.get('country_code') or body.get('countryCode')
+                    if body.get('success') is not False and not body.get('error') and isinstance(value, str) and len(value) == 2 and value.isascii() and value.isalpha():
+                        code, error, ttl = value.upper(), None, 6 * 3600
+        except Exception:
+            pass
+        # Bound memory, including when subscriptions expose many distinct IPs.
+        if len(self.country_cache) >= 512:
+            self.country_cache.pop(next(iter(self.country_cache)))
+        if len(self.country_cooldown) > 16:
+            self.country_cooldown.pop(next(iter(self.country_cooldown)))
+        self.country_cache[key] = (self.clock() + ttl, code, error)
+        return code, error
+
     async def observe(self, upstream, settings):
         timeout = settings["probe_timeout"]
         result = Observation()
@@ -147,6 +186,8 @@ class Prober:
                             return str(ipaddress.ip_address(body["ip"]))
                 except Exception:
                     pass
+                target = urlsplit(url)
+                result.identity_errors.append(target.scheme+'://'+target.netloc+target.path)
                 return None
             async def udp_identity(server):
                 start = time.monotonic()
@@ -157,6 +198,8 @@ class Prober:
                 except Exception:
                     return None
                 finally:
+                    if value is None:
+                        result.identity_errors.append(server)
                     result.samples.append({"target":server,"method":"stun-with-retry","ok":bool(value),"ms":round((time.monotonic()-start)*1000,2) if value else None})
             checks, tcp_ips, udp_ips = await asyncio.gather(
                 asyncio.gather(*(tcp_check(u) for u in settings["tcp_check_urls"])),
@@ -185,13 +228,11 @@ class Prober:
                     if not ipaddress.ip_address(ip).is_global:
                         result.countries[ip] = "INVALID"
                         return
-                    url = settings["country_url"].replace("{ip}", ip)
-                    async with direct.get(url, allow_redirects=False) as response:
-                        if response.status == 200:
-                            body = await read_json(response)
-                            code = body.get("country_code") or body.get("countryCode")
-                            if isinstance(code, str) and len(code) == 2:
-                                result.countries[ip] = code.upper()
+                    code, error = await self.country(direct, settings['country_url'], ip)
+                    if code:
+                        result.countries[ip] = code
+                    else:
+                        result.country_errors[ip] = error
                 except Exception:
                     pass
             controls = []
@@ -204,6 +245,10 @@ class Prober:
             result.failure_confirmed = any(outcomes)
         if result.complete:
             result.reason = "双协议出口已验证" if result.us else "观测到非美国出口"
+        elif result.country_errors and result.identity_complete and result.tcp_ok and result.udp_ok:
+            result.reason = "；".join(sorted(set(result.country_errors.values()))) + "；TCP/UDP 连通不代表出口验证通过"
+        elif result.identity_errors and result.tcp_ok and result.udp_ok:
+            result.reason = "部分出口验证目标未返回有效结果：" + "、".join(sorted(result.identity_errors))
         elif result.failure_confirmed:
             result.reason = "必需协议持续连通故障（独立对照目标可达）"
         else:

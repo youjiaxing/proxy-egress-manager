@@ -110,6 +110,8 @@ async def test_real_tcp_and_udp_observations_are_separate_and_all_targets_requir
         assert not result.complete and not result.us
         assert result.tcp_ok and result.udp_ok
         assert not result.failure_confirmed
+        assert result.identity_errors == [str(http.make_url('/missing'))]
+        assert '部分出口验证目标' in result.reason
         settings['tcp_identity_urls']=settings['tcp_identity_urls'][:1]
         identity_value['ip']='127.0.0.1'
         result=await Prober().observe(upstream,settings)

@@ -88,7 +88,7 @@ class History:
         for r in reversed(records):
             for sample in r.get('samples', []):
                 key = json.dumps([r.get('node_ref'),r.get('config'),r['origin'],sample['target'],sample['method']], separators=(',', ':'))
-                group = series.setdefault(key, {'target':sample['target'], 'method':sample['method'], 'node_ref':r.get('node_ref'), 'origin':r['origin'], 'attempts':0,'successes':0,'total_ms':0,'deltas':[],'previous':None,'last_time':None,'previous_segment':None,'points':[]})
+                group = series.setdefault(key, {'config':r.get('config'), 'target':sample['target'], 'method':sample['method'], 'node_ref':r.get('node_ref'), 'origin':r['origin'], 'attempts':0,'successes':0,'total_ms':0,'deltas':[],'previous':None,'last_time':None,'previous_segment':None,'points':[]})
                 group['attempts'] += 1
                 ms = sample.get('ms') if sample.get('ok') else None
                 if ms is not None:

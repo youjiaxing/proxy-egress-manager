@@ -10,10 +10,10 @@ async function until(fn){for(let i=0;i<150;i++){if(fn())return;await pause();}th
  const a={id:'a',ref:'s/a',name:'美国 A',source:1,disabled:false,priority:100,last_probe:null},b={...a,id:'b',ref:'t/b',name:'美国 B',source:10};
  const group={id:'1',uid:'g1',name:'业务 A',node:'a',endpoint:'proxy-egress-manager:1081',paused:false,pinned:false,lease_valid:false,tcp_ips:[],udp_ips:[],scope:{mode:'nodes',ids:['s/a','t/b']},candidate_refs:['s/a','t/b'],candidate_count:2,reason:'没有合格节点'};
  const state={health:{scheduler_valid:true},groups:[group],sources:[{slot:1,uid:'s',name:'订阅一',enabled:true},{slot:10,uid:'t',name:'订阅十',enabled:true}],nodes:{a,b},settings:{}};
- const posts=[];
+ const posts=[];let qualityData={records:[],series:[],coverage_start:null};
  w.fetch=async(path,opt={})=>{
   if(opt.method==='POST')posts.push({path,body:JSON.parse(opt.body)});
-  const body=path==='/api/state'?state:path.startsWith('/api/quality')?{records:[],series:[],coverage_start:null}:path.startsWith('/api/action')||path==='/api/tests'?{job:'job1'}:path.startsWith('/api/jobs')?{status:'done',message:'操作已完成'}:{csrf:'test'};
+  const body=path==='/api/state'?state:path.startsWith('/api/quality')?qualityData:path.startsWith('/api/action')||path==='/api/tests'?{job:'job1'}:path.startsWith('/api/jobs')?{status:'done',message:'操作已完成'}:{csrf:'test'};
   return {ok:true,json:async()=>body};
  };
  const native=w.setTimeout.bind(w);w.setTimeout=(fn,ms)=>native(fn,ms===1000?5:ms);
@@ -28,6 +28,23 @@ async function until(fn){for(let i=0;i<150;i++){if(fn())return;await pause();}th
  d.getElementById('quality-udp').click();await until(()=>posts.some(p=>p.path==='/api/tests'));
  assert.deepEqual(posts.find(p=>p.path==='/api/tests').body.nodes,['s/a']);
  d.getElementById('quality-close').click();assert.equal(d.getElementById('quality-dialog').open,false);
+ const sample={node_ref:'s/a',config:'config1',origin:'running',target:'https://example.test/check',method:'http-get-headers',attempts:10,successes:8,mean_ms:125,variation_ms:25,points:[{time:100,ms:100},{time:130,ms:null},{time:160,ms:150}]};
+ qualityData={records:[],series:[{...sample,origin:'candidate',mean_ms:999,target:'candidate.example'},sample,{...sample,target:'stun.example:3478',method:'stun-with-retry',mean_ms:300}],state_records:[],restores:[{time:90}],coverage_start:50};
+ d.querySelector('[data-quality-group="1"]').click();await until(()=>d.getElementById('quality-target'));
+ assert.match(d.querySelector('.quality-overview').textContent,/暂不可用/);
+ assert.equal(d.querySelectorAll('.quality-hero-stats>div').length,4);
+ assert.match(d.querySelector('.quality-hero-stats').textContent,/20.0/);
+ assert.match(d.querySelector('.quality-hero-stats').textContent,/125/);
+ assert.doesNotMatch(d.querySelector('.quality-hero-stats').textContent,/999/);
+ assert.equal(d.querySelectorAll('#quality-target option').length,2);
+ assert.match(d.querySelector('.quality-chart').outerHTML,/检查失败/);
+ assert.match(d.querySelector('.quality-events').textContent,/配置已恢复/);
+ assert.doesNotMatch(d.querySelector('.quality-events').textContent,/停止转发/);
+ assert.ok([...d.querySelectorAll('details')].every(x=>!x.open));
+ const target=d.getElementById('quality-target');target.value='1';target.dispatchEvent(new w.Event('change'));
+ await until(()=>d.querySelector('.quality-hero-stats').textContent.includes('300'));
+ d.getElementById('quality-close').click();
+
  await until(()=>d.getElementById('operation-list').textContent.includes('处理完成'));
  d.querySelector('[data-scope="1"]').click();assert.equal(d.getElementById('dialog').open,true);
  const mode=d.getElementById('scope-mode');mode.value='sources';mode.dispatchEvent(new w.Event('change'));
