@@ -194,3 +194,14 @@
 - 修正源码 `6531ad7f2b02cb593abf8109b43791e4648cdd22`，发布 https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.3.4 ，原生双架构及真实 Compose 发布流程 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42355276413 成功。固定镜像 `ghcr.io/youjiaxing/proxy-egress-manager:v0.3.4@sha256:50b912a22cf453c5aa33032a10db4b342ec816917dcafe81ea84c20b99ad2314`，附件源码与摘要匹配。仅重建应用，两个核心保持运行；备份 `/root/proxy-egress-manager-deployment-backups/20261107T082730Z-pre-v0.3.4`。
 - 首次线上业务验收如实失败：当前国家服务 ipapi.co 已限流，必需 Twilio STUN 超时，两组出口身份到期。只读目标对照发现 ipwho.is 同样429、ipwhois.app正常返回两组US；Google19302在组2超时，但Google3478和Cloudflare3478在两组均响应且与TCP身份一致。先用复制设置完整 Prober 观测两组均 complete/us，再通过认证设置操作切换至 `https://ipwhois.app/json/{ip}` 与 Cloudflare3478/Google3478。仍要求两路UDP、TCP/UDP美国身份及独立出口，不将服务可达性等同准入，也不声称免费公共查询服务长期可靠。
 - 更新检测目标后，HTTPS登录/退出、新界面资源、质量/流量API、两组有效授权和两组实际SOCKS请求均通过；两个出口独立且与当前验证地址一致。来源/分组UID、77节点、原节点及范围保持，既有77候选/19通过/3推荐记录保留，未重新全量探测或自动应用推荐；旧评估仍需当前配置复验。累计用量按身份不倒退、统计起点相同、gap=false，质量历史882→898。外部验收 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42355572072 成功（TLS/认证/公网端口隔离）。
+
+## v0.3.5 连续配置旅程
+
+- 将配置分组串为选择方式→挑选节点→确认配置→查看结果。确认页在写配置前列出拟保存清单、当前节点和连接影响；保留断开影响确认，返回修改保留选择。评估与保存留在当前对话框显示进度；关闭明确提示后台继续，用户关闭后不会在评估结束时擅自弹回。
+- 保存后直接展示实际节点池、当前节点、授权状态和原因；暂停、固定、暂不可用分别提供启用、解除固定、重试路径。错误保留草稿；请求是否执行不确定时不自动重提，先只读核对实际状态，再由用户选择是否修改。一次结果状态刷新失败不宣称当前业务已生效。
+- 异步历史回填绑定对话框世代，转入确认页后旧回填不再写入；请求保留捕获的分组UID，不将旧流程绑定到复用槽位。保存失败的卡片标题不再沿用上次成功结果。
+- 本地固定 Mihomo 回归 98 passed（7.04秒），七组 UI DOM 回归通过。新增 journey 覆盖编辑既有节点池、确认前无写入、移出确认、返回/失败保留选择、实际结果、暂停启用、固定解除、模糊提交不重试及先读状态、评估关闭不重开和迟到历史不覆盖确认页；未宣称实际浏览器截图视觉验收。
+- 独立实现复核未发现已确认阻塞，确认挑选不写配置、显式确认才保存、失败保留选择、结果及历史回填的主要路径。复核未独立重跑测试，最后的显式UID优先、关闭评估不重开、unknown核对后回草稿没有重读；主代理逐项核对固定提交源码并重跑针对性journey通过，不将这些结论冒充独立执行。
+- 固定源码 `67d5e3a163646a1dff0de437bc72602b1246f901`；原生双架构 CI https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42357120455 与发布流程 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42357451998 均成功，包含真实 Compose 验证。Release https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.3.5 ，固定镜像 `ghcr.io/youjiaxing/proxy-egress-manager:v0.3.5@sha256:fa2d155ea977f9d4c548d17934afb9c1355b6a58a0706c57a3ebf1de5520653d`，附件源码/摘要已核对。
+- 线上备份 `/root/proxy-egress-manager-deployment-backups/20261107T085809Z-pre-v0.3.5`，仅重建应用，两个核心保持运行。HTTPS登录/退出、四步流程资源、质量/流量API、原订阅与节点及来源/分组UID、原节点/范围/暂停/固定设置和检测配置保留通过。两组租约有效、实际SOCKS请求出口匹配且相互独立；既有77候选/19通过/3推荐历史保留，没有额外全量评估或应用推荐。流量逐身份不倒退、起点一致、gap=false，质量历史1004→1006。
+- 外部 DNS、可信TLS、认证和公网代理/核心/管理端口隔离验收 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42357700423 成功。线上没有为验收修改用户节点池；旅程写入、失败与恢复路径在隔离DOM fixture/CI中验证，线上只核对资源、只读配置与实际出口。

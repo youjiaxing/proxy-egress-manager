@@ -2,7 +2,7 @@
 
 用于 Docker 共享网络的 SOCKS5 出口分组工具。每组使用固定入口、独立验证的美国出口；正常保持，持续故障自动寻找独立备用，没有备用则暂停。支持 TCP CONNECT 和 UDP ASSOCIATE、网页管理、多订阅、分组节点范围、质量历史、独立手动诊断、固定节点、备份恢复和 webhook 告警。
 
-**状态：v0.3.4 已公开发布，VPS 管理面与 HTTPS 反代已验收。** 原生 Linux arm64 / amd64 远程 CI、镜像构建与 Compose 启动均通过；公网端口边界与登录保护已独立验证，详细范围见 [验证记录](docs/verification.md)。已接入用户订阅；独立美国出口放行仍受现场探测结果限制，公共身份服务可靠性仍需验证。不得仅凭节点名称或 `udp: true` 放行。
+**状态：v0.3.5 已公开发布，VPS 管理面与 HTTPS 反代已验收。** 原生 Linux arm64 / amd64 远程 CI、镜像构建与 Compose 启动均通过；公网端口边界与登录保护已独立验证，详细范围见 [验证记录](docs/verification.md)。已接入用户订阅；独立美国出口放行仍受现场探测结果限制，公共身份服务可靠性仍需验证。不得仅凭节点名称或 `udp: true` 放行。
 
 ## 组件
 
@@ -24,10 +24,10 @@ socks5://proxy-egress-manager:1082
 
 完整步骤：[1Panel 部署](docs/deployment.md)、[升级与恢复](docs/operations.md)、[安全与保证范围](docs/security.md)、[设计与协议](docs/architecture.md)。
 
-公开源码：[GitHub](https://github.com/youjiaxing/proxy-egress-manager)，当前版本：[v0.3.4](https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.3.4)。GHCR 镜像采用发布流程生成的固定摘要，设置 `PEM_IMAGE` 为：
+公开源码：[GitHub](https://github.com/youjiaxing/proxy-egress-manager)，当前版本：[v0.3.5](https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.3.5)。GHCR 镜像采用发布流程生成的固定摘要，设置 `PEM_IMAGE` 为：
 
 ```text
-ghcr.io/youjiaxing/proxy-egress-manager:v0.3.4@sha256:50b912a22cf453c5aa33032a10db4b342ec816917dcafe81ea84c20b99ad2314
+ghcr.io/youjiaxing/proxy-egress-manager:v0.3.5@sha256:fa2d155ea977f9d4c548d17934afb9c1355b6a58a0706c57a3ebf1de5520653d
 ```
 
 优先部署固定版本与摘要。自行构建时使用 `docker compose -f compose.yaml -f compose.build.yaml build`；生产配置本身不构建源码，Mihomo 仍使用 Compose 中的固定上游摘要。
@@ -36,7 +36,7 @@ ghcr.io/youjiaxing/proxy-egress-manager:v0.3.4@sha256:50b912a22cf453c5aa33032a10
 
 ## 节点与质量
 
-订阅点击“查看节点”；节点页支持卡片/表格，布局记在本机浏览器。分组统一从“配置分组”进入：自动优选按需评估并推荐最多 3 个节点，确认后保存；手动选择可查看质量、延迟并勾选多个节点。已有推荐可直接查看，无须重新测速。正常使用池内一个，故障时池内切换。“更多操作”中的“立即切换当前节点”只更换当前节点，不修改池，“质量详情”查看记录及手动诊断。未使用节点不增加定时探测；成功率与 UDP 往返未响应比例均不等于真实业务丢包率。完整用法、资源限制与迁移边界见 [节点范围与质量记录](docs/quality.md)。
+订阅点击“查看节点”；节点页支持卡片/表格，布局记在本机浏览器。分组统一从“配置分组”进入：自动优选按需评估并推荐最多 3 个节点，确认后保存；手动选择可查看质量、延迟并勾选多个节点。已有推荐可直接查看，无须重新测速。挑选后先确认清单和连接影响，再保存并在同一流程查看实际使用节点、状态和下一步；失败可保留选择返回修改。正常使用池内一个，故障时池内切换。“更多操作”中的“立即切换当前节点”只更换当前节点，不修改池，“质量详情”查看记录及手动诊断。未使用节点不增加定时探测；成功率与 UDP 往返未响应比例均不等于真实业务丢包率。完整用法、资源限制与迁移边界见 [节点范围与质量记录](docs/quality.md)。
 
 ## 流量用量
 
