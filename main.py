@@ -13,6 +13,7 @@ from scheduler.controller import Controller
 from scheduler.core import Core
 from scheduler.store import Store
 from scheduler.history import History
+from scheduler.traffic import Traffic
 from scheduler.diagnostics import Diagnostics, diagnostic_core
 from web.server import Management
 
@@ -54,6 +55,9 @@ async def serve():
     store = Store(directory)
     gateway = Gateway(os.environ.get("SOCKS_BIND", "0.0.0.0"), os.environ.get("UDP_ADVERTISE_HOST"))
     controller = Controller(store, core, gateway)
+    traffic = Traffic(store.directory)
+    controller.traffic = gateway.traffic = traffic
+    traffic.start()
     history = History(store.directory)
     controller.history = history
     history.start()
@@ -78,6 +82,7 @@ async def serve():
         await runner.cleanup()
         await controller.stop()
         await history.close()
+        await traffic.close()
         if diag: await diag.close()
         store.close()
         lockfile.close()

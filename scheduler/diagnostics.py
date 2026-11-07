@@ -12,6 +12,7 @@ from aiohttp_socks import ProxyConnector
 import yaml
 from scheduler.core import Core, SubscriptionLoader, atomic_write
 from scheduler.policy import node_ref, source_for
+from scheduler.traffic import metered_probe
 from scheduler.probe import COOKIE, DatagramReply, stun_request, stun_response
 from gateway.socks import open_socks, pack_address, unpack_datagram
 import os
@@ -87,7 +88,7 @@ class Diagnostics:
             cfg = next((p for p in proxies if p['name']==node['id']), None)
             if cfg is None: raise ValueError('节点配置尚未就绪')
             return {'config':copy.deepcopy(cfg),'node_ref':ref,'owner':group['uid'] if group else 'node:'+ref,
-                    'settings':copy.deepcopy(c.state['settings']), 'name':node['name'], 'epoch':c.history_epoch, 'segment':c.session_epoch}
+                    'settings':copy.deepcopy(c.state['settings']), 'name':node['name'], 'epoch':c.history_epoch, 'segment':c.session_epoch, 'accounting':c.traffic.context(c.state,group,node,'manual') if c.traffic else None}
 
     async def run(self, data, progress=None):
         refs, group_id, kind = data.get('nodes'), data.get('group'), data.get('test','http')
@@ -108,21 +109,22 @@ class Diagnostics:
                         await self.core.ready()
                         await self.core.update_source(1,yaml.safe_dump({'proxies':[snapshot['config']]},allow_unicode=True))
                         upstream = await self.core.select(0,snapshot['config']['name'])
-                        settings = snapshot['settings']
-                        if kind=='udp':
-                            result = await asyncio.wait_for(udp_sample(upstream,settings['stun_servers'][0]),60)
-                            result['samples'] = []
-                        else:
-                            url = settings['tcp_check_urls'][0]
-                            parts = urlsplit(url)
-                            target = parts.scheme+'://'+parts.netloc+parts.path
-                            start=time.monotonic()
-                            connector=ProxyConnector.from_url('socks5://%s:%s'%upstream,rdns=True)
-                            async with aiohttp.ClientSession(connector=connector,timeout=aiohttp.ClientTimeout(total=8)) as client:
-                                async with client.get(url,allow_redirects=False) as response:
-                                    ms=round((time.monotonic()-start)*1000,2)
-                                    ok=200<=response.status<400
-                            result={'samples':[{'target':target,'method':'http-get-headers','ok':ok,'ms':ms if ok else None}], 'ok':ok}
+                        async with metered_probe(upstream,self.controller.traffic,snapshot['accounting']) as upstream:
+                            settings = snapshot['settings']
+                            if kind=='udp':
+                                result = await asyncio.wait_for(udp_sample(upstream,settings['stun_servers'][0]),60)
+                                result['samples'] = []
+                            else:
+                                url = settings['tcp_check_urls'][0]
+                                parts = urlsplit(url)
+                                target = parts.scheme+'://'+parts.netloc+parts.path
+                                start=time.monotonic()
+                                connector=ProxyConnector.from_url('socks5://%s:%s'%upstream,rdns=True)
+                                async with aiohttp.ClientSession(connector=connector,timeout=aiohttp.ClientTimeout(total=8)) as client:
+                                    async with client.get(url,allow_redirects=False) as response:
+                                        ms=round((time.monotonic()-start)*1000,2)
+                                        ok=200<=response.status<400
+                                result={'samples':[{'target':target,'method':'http-get-headers','ok':ok,'ms':ms if ok else None}], 'ok':ok}
                     except asyncio.CancelledError:
                         raise
                     except Exception:

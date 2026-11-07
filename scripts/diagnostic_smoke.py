@@ -14,6 +14,7 @@ from scheduler.core import Core, parse_subscription
 from scheduler.store import Store
 from scheduler.controller import Controller
 from scheduler.history import History
+from scheduler.traffic import Traffic
 from scheduler.diagnostics import Diagnostics, diagnostic_core
 from scheduler.policy import identity, node_ref
 from scheduler.probe import COOKIE
@@ -81,10 +82,14 @@ async def main():
                 store.state['sources']=[{'slot':1,'uid':identity(),'name':'fixture','url':'','enabled':True}];store.state['nodes']=nodes
                 store.state['settings']['tcp_check_urls']=[f'http://{host}:{site._server.sockets[0].getsockname()[1]}/check']
                 store.state['settings']['stun_servers']=[f'127.0.0.1:{stun.get_extra_info("sockname")[1]}']
-                c=Controller(store,business,Gateway());tests=Diagnostics(c,diag,history);ref=node_ref(c.state,next(iter(nodes.values())))
+                c=Controller(store,business,Gateway());traffic=Traffic(store.directory);c.traffic=traffic;tests=Diagnostics(c,diag,history);ref=node_ref(c.state,next(iter(nodes.values())))
                 result=await tests.run({'nodes':[ref],'test':'http'});assert result[0].get('ok'), result
                 result=await tests.run({'nodes':[ref],'test':'udp'});assert result[0].get('received')==20,result
                 assert store.state['groups'][0]['node'] is None
+                records=(await traffic.query())['rows']
+                total=next(r for r in records if r['period']=='all')
+                assert total['origin']=='manual' and total['upload']>400 and total['download']>640, total
+                await traffic.close()
                 print('PASS isolated Docker diagnostic service: HTTP + 20/20 UDP samples; no real subscription or business state writes')
             finally:await diag.close();await business.close();await history.close();store.close()
     finally:

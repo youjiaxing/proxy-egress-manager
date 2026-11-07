@@ -11,6 +11,7 @@ class Lease:
     deadline: float = 0
     revocations: int = 0
     upstream: object = None
+    accounting: object = None
     tasks: set = field(default_factory=set)
     transports: set = field(default_factory=set)
 
@@ -20,6 +21,7 @@ class Gateway:
         self.host, self.advertise_host, self.clock = host, advertise_host, clock
         self.leases, self.servers = {}, {}
         self.scheduler_deadline = 0
+        self.traffic = None
 
     def allowed(self, group, generation):
         lease = self.leases.get(group)
@@ -29,11 +31,12 @@ class Gateway:
     def pulse(self, grace):
         self.scheduler_deadline = self.clock() + grace
 
-    def grant(self, group, upstream, identity_deadline):
+    def grant(self, group, upstream, identity_deadline, accounting=None):
         lease = self.leases.setdefault(group, Lease())
         if lease.revocations:
             return None
         lease.upstream, lease.deadline = upstream, identity_deadline
+        lease.accounting = accounting
         return lease.generation
 
     async def revoke(self, group):
@@ -76,6 +79,7 @@ class Gateway:
         lease.tasks.add(task)
         lease.transports.add(writer)
         generation = lease.generation
+        accounting = lease.accounting
         backend_writer = None
         udp_transports = []
         try:
@@ -106,16 +110,18 @@ class Gateway:
             if command == 1:
                 writer.write(b"\x05\x00\x00" + pack_address(*bound))
                 await writer.drain()
-                async def copy(src, dst):
+                async def copy(src, dst, upload):
                     while True:
                         data = await src.read(65536)
                         if not data or not self.allowed(group, generation):
                             return
                         # No await between authorization check and the user-space write.
                         dst.write(data)
+                        if self.traffic and accounting:
+                            self.traffic.add(accounting, len(data) if upload else 0, 0 if upload else len(data))
                         await dst.drain()
-                pumps = [asyncio.create_task(copy(reader, backend_writer)),
-                         asyncio.create_task(copy(backend_reader, writer))]
+                pumps = [asyncio.create_task(copy(reader, backend_writer, True)),
+                         asyncio.create_task(copy(backend_reader, writer, False))]
                 try:
                     await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
                 finally:
@@ -130,6 +136,7 @@ class Gateway:
                 relay = infos[0][4][:2]
                 peer_ip = writer.get_extra_info("peername")[0]
                 front = ClientRelay(self, group, generation, peer_ip, target[1])
+                front.accounting = accounting
                 back = BackendRelay(self, group, generation, front)
                 bt, _ = await loop.create_datagram_endpoint(lambda: back, remote_addr=relay)
                 front.backend = bt
@@ -166,6 +173,7 @@ class ClientRelay(asyncio.DatagramProtocol):
         self.gateway, self.group, self.generation = gateway, group, generation
         self.peer_ip, self.requested_port = peer_ip, requested_port
         self.client, self.transport, self.backend = None, None, None
+        self.accounting = None
 
     def connection_made(self, transport):
         self.transport = transport
@@ -183,6 +191,8 @@ class ClientRelay(asyncio.DatagramProtocol):
             return
         self.client = addr
         self.backend.sendto(data)
+        if self.gateway.traffic and self.accounting:
+            self.gateway.traffic.add(self.accounting, len(unpack_datagram(data)[2]), 0)
 
 
 class BackendRelay(asyncio.DatagramProtocol):
@@ -197,3 +207,5 @@ class BackendRelay(asyncio.DatagramProtocol):
         except (ValueError, UnicodeError):
             return
         self.front.transport.sendto(data, self.front.client)
+        if self.gateway.traffic and self.front.accounting:
+            self.gateway.traffic.add(self.front.accounting, 0, len(unpack_datagram(data)[2]))

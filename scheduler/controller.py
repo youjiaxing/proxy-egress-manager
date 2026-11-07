@@ -28,6 +28,7 @@ class Controller:
         self.core_error = None
         self.maintenance = marker_path(store.directory).exists()
         self.history = None
+        self.traffic = None
         self.history_epoch = self.state.get('quality_epoch') or identity()
         self.session_epoch = identity()
         self.alert_queue = asyncio.Queue(maxsize=100)
@@ -145,7 +146,12 @@ class Controller:
         observed_at = self.clock()
         try:
             budget = max(1, min(45, self.state["settings"]["health_grace"] * 0.75))
-            result = await asyncio.wait_for(self.prober.observe(upstream, self.state["settings"]), budget)
+            from scheduler.traffic import metered_probe
+            context = self.traffic.context(self.state,group,self.state['nodes'][node],'candidate' if candidate else 'running') if self.traffic else None
+            async def measured():
+                async with metered_probe(upstream,self.traffic,context) as route:
+                    return await self.prober.observe(route,self.state['settings'])
+            result = await asyncio.wait_for(measured(), budget)
         except asyncio.TimeoutError:
             result = Observation(reason="探测总超时，身份未刷新")
         result.observed_at = observed_at
@@ -193,7 +199,8 @@ class Controller:
             group["status"] = "paused"
             raise
         self.identities[group["id"]] = deadline
-        if self.gateway.grant(group["id"], upstream, deadline) is None:
+        accounting = self.traffic.context(self.state,group,self.state['nodes'][node],'business') if self.traffic else None
+        if self.gateway.grant(group["id"], upstream, deadline, accounting) is None:
             await self.pause(group, "旧会话仍在清理，等待下一轮重验")
             return False
         if changed:

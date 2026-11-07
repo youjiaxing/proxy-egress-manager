@@ -17,7 +17,7 @@ async function api(path, body, method) {
   if (!response.ok) { let text = await response.text(); try { text = JSON.parse(text).error || text; } catch {} const error=new Error(text || '请求失败'); error.status=response.status; throw error; }
   return response.json();
 }
-function showLogin() { closeQuality(); selectedNodes.clear(); hideHelp(); renderGroups.previous=null; operationSession++; operations.clear(); renderOperations(); closeDialog(); $('login').hidden = false; $('dashboard').hidden = true; $('logout').hidden = true; clearInterval(refreshTimer); }
+function showLogin() { closeTraffic(); closeQuality(); selectedNodes.clear(); hideHelp(); renderGroups.previous=null; operationSession++; operations.clear(); renderOperations(); closeDialog(); $('login').hidden = false; $('dashboard').hidden = true; $('logout').hidden = true; clearInterval(refreshTimer); }
 async function authenticated() { $('login').hidden = true; $('dashboard').hidden = false; $('logout').hidden = false; await refresh(); clearInterval(refreshTimer); refreshTimer = setInterval(() => refresh().catch(e => message(e.message)), 8000); }
 async function action(kind, data = {}) {
   const key = [kind, data.group || '', data.slot || '', data.node || ''].join(':');
@@ -141,6 +141,7 @@ function renderGroups() {
       helpButton('pause-'+g.id,g.paused?'启用分组':'暂停分组',`data-action="${g.paused?'group_resume':'group_pause'}" data-group="${esc(g.id)}"`,g.paused?'重新启用并等待验证，验证通过前仍不能使用。':'停止这个代理入口并断开已有连接，直到你再次启用。'),
       helpButton('pin-'+g.id,g.pinned?'允许自动换节点':'固定当前节点',`data-pin="${esc(g.id)}" aria-disabled="${!g.pinned&&!g.node}"`,g.pinned?'解除固定；正常时保持当前节点，满足切换条件后才寻找替代节点。':!g.node?'请先等待分组获得节点，再固定当前节点。':'保持当前节点，不自动更换；故障或验证未通过时停止转发。固定节点不代表固定公网 IP。'),
       helpButton('scope-'+g.id,'可用清单',`data-scope="${esc(g.id)}"`,'指定本组允许使用的订阅或节点；移出当前节点会断开连接。'),
+      helpButton('traffic-'+g.id,'流量用量',`data-traffic-group="${esc(g.uid)}"`,'按需查看今日、本月和累计用量；不发起测速。'),
       helpButton('quality-'+g.id,'连接质量',`data-quality-group="${esc(g.id)}"`,'查看运行检查历史，或独立测试当前节点；手动测试不修改业务分组。'),
       helpButton('retry-'+g.id,'立即重试',`data-action="group_retry" data-group="${esc(g.id)}"`,'在允许范围内立即尝试一轮；没有合格节点后按1、5、15分钟放慢。'),
       helpButton('delete-'+g.id,'删除分组',`data-delete-group="${esc(g.id)}"`,'删除该代理入口并断开已有连接。使用此地址的业务需要重新配置；订阅不会删除。')
@@ -182,7 +183,7 @@ function renderNodes() {
   const nodes=visibleNodes();
   $('node-table').hidden=layout==='cards';$('node-cards').hidden=layout!=='cards';
   const select=n=>`<input class="node-select" type="checkbox" data-select-node="${esc(n.ref||n.id)}" aria-label="选择 ${esc(n.name)}" ${selectedNodes.has(n.ref||n.id)?'checked':''}>`;
-  const actions=n=>`<button class="quiet" data-quality-node="${esc(n.ref||n.id)}">连接质量 / 测试</button><button class="quiet" data-disable-node="${esc(n.id)}">${n.disabled?'启用':'禁用'}</button>`;
+  const actions=n=>`<button class="quiet" data-traffic-node="${esc(n.ref||n.id)}">流量用量</button><button class="quiet" data-quality-node="${esc(n.ref||n.id)}">连接质量 / 测试</button><button class="quiet" data-disable-node="${esc(n.id)}">${n.disabled?'启用':'禁用'}</button>`;
   $('node-list').innerHTML=nodes.map(n=>`<tr><td>${select(n)}<strong>${esc(n.name)}</strong><br><small>${esc(state.sources.find(s=>s.slot===n.source)?.name||'来源 '+n.source)}</small></td><td>${nodeSummary(n)}</td><td>TCP ${esc(n.last_probe?.tcp_ips.join(', ')||'—')}<br>UDP ${esc(n.last_probe?.udp_ips.join(', ')||'—')}</td><td><input aria-label="节点优先级" type="number" min="0" max="10000" value="${n.priority}" data-priority="${esc(n.id)}"></td><td>${actions(n)}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">没有符合条件的节点</td></tr>';
   $('node-cards').innerHTML=nodes.map(n=>`<article><h2>${select(n)}${esc(n.name)}</h2><p class="muted">${esc(state.sources.find(s=>s.slot===n.source)?.name||'来源 '+n.source)}</p><p>${nodeSummary(n)}</p><label>节点优先级<input type="number" aria-label="节点优先级" min="0" max="10000" value="${n.priority}" data-priority="${esc(n.id)}"></label><div class="actions">${actions(n)}</div></article>`).join('')||'<p class="empty">没有符合条件的节点</p>';
 }
@@ -224,6 +225,8 @@ document.addEventListener('click',guarded(async e=>{
   const b=e.target.closest('button'); if(!b)return;
   if(b.dataset.layout){layout=b.dataset.layout;try{localStorage.setItem('pem-layout',layout);}catch{}renderGroups.previous=null;await refresh();}
   if(b.dataset.viewSource){sourceFilter=b.dataset.viewSource;$('node-filter').value='';$('us-only').checked=false;$('source-filter').value=sourceFilter;document.querySelector('[data-tab=nodes]').click();renderNodes();}
+  if(b.dataset.trafficGroup)openTraffic({group:b.dataset.trafficGroup});
+  if(b.dataset.trafficNode)openTraffic({node:b.dataset.trafficNode});
   if(b.dataset.scope)openScope(b.dataset.scope);
   if(b.dataset.qualityGroup)openQuality({group:b.dataset.qualityGroup});
   if(b.dataset.qualityNode)openQuality({node:b.dataset.qualityNode});
@@ -322,3 +325,25 @@ $('test-source').onclick=guarded(()=>{if(!sourceFilter)throw Error('请先选择
 $('export-quality').onclick=guarded(async()=>{if(!confirm('质量历史可能包含出口 IP、节点标识和运行时间，请安全保存。继续下载？'))return;const link=document.createElement('a');link.href='/api/quality/export';link.download='pem-quality.ndjson';link.click();});
 
 (async()=>{try {const session=await api('/api/session'); csrf=session.csrf; await authenticated();} catch {showLogin();}})();
+
+let trafficContext=null,trafficSequence=0;
+function bytes(value){const n=Number(value)||0;if(n<1024)return n+' B';const e=Math.min(4,Math.floor(Math.log(n)/Math.log(1024)));return (n/1024**e).toFixed(2)+' '+['B','KiB','MiB','GiB','TiB'][e];}
+function closeTraffic(){trafficSequence++;trafficContext=null;if($('traffic-dialog')?.open)$('traffic-dialog').close();if($('traffic-body'))$('traffic-body').textContent='';}
+function openTraffic(context={}){trafficContext=context;$('traffic-dialog').showModal();renderTraffic().catch(e=>{$('traffic-body').textContent=e.message;});}
+async function renderTraffic(){
+ const seq=++trafficSequence,ctx={...trafficContext};
+ $('traffic-body').textContent='正在读取流量汇总…';
+ const data=await api('/api/traffic?'+new URLSearchParams(ctx));
+ if(seq!==trafficSequence||trafficContext===null)return;
+ const origins={business:'业务转发',running:'日常验证',candidate:'候选验证',manual:'手动测试'};
+ const periods=[['今日',data.day],['本月',data.month],['累计','all']];
+ const totals=period=>data.summary[period]||{upload:0,download:0,total:0};
+ $('traffic-body').innerHTML=`<p class="notice">北京时间自然日 / 月。统计开始：${date(data.started)}。最后保存：${data.saved?date(data.saved):'尚未保存'}。</p>${data.gap||data.error?`<p role="alert" class="notice">${esc(data.error||'记录可能不完整：曾非正常退出或出现统计缺口；恢复写盘不补算遗漏。')}</p>`:''}${data.restored?`<p>最近配置恢复：${date(data.restored)}；本机用量记录保留。</p>`:''}<button id="traffic-refresh" class="quiet">手动刷新用量</button><div class="quality-stats">${periods.map(([name,key])=>{const t=totals(key);return `<div class="quality-stat"><strong>${bytes(t.total)}</strong><small>${name}合计</small><p>上传 ${bytes(t.upload)}<br>下载 ${bytes(t.download)}</p></div>`;}).join('')}</div><p class="status-note">统计本工具交给本地传输的承载字节，不保证远端收到，不等于订阅商计费。未包含网络包头、重传、节点协议封装、订阅下载、直连查询或 VPS 其他服务。每 60 秒后台保存；强制退出可能漏掉最近一分钟及在途提交。无实时曲线，不增加节点探测。</p><div class="table-wrap"><table><thead><tr><th>分组 / 节点 / 来源</th><th>用途</th><th>周期</th><th>上传</th><th>下载</th><th>合计</th></tr></thead><tbody>${data.rows.map(r=>`<tr><td>${esc(r.group)}${r.owner&&!state.groups.some(g=>g.uid===r.owner)?'（历史分组）':''}<br>${esc(r.node)}${!Object.values(state.nodes).some(n=>n.ref===r.node_ref)?'（历史节点）':''}<br><small>${esc(r.source)}</small></td><td>${esc(origins[r.origin]||r.origin)}</td><td>${esc(periods.find(p=>p[1]===r.period)?.[0]||r.period)}</td><td>${bytes(r.upload)}</td><td>${bytes(r.download)}</td><td>${bytes(r.total)}</td></tr>`).join('')||'<tr><td colspan="6">尚无已观测用量；不代表启用统计前没有流量。</td></tr>'}</tbody></table></div><p class="muted">同一笔流量按不同视角汇总，今日 / 本月 / 累计彼此重叠，请勿相加。累计不随配置恢复清零；历史对象保留原身份。最多 5 万条 / 32 MiB 记录内容，数据库另有开销；到限会提示停记，不自动删除累计。</p>`;
+ $('traffic-body').insertAdjacentHTML('beforeend',`<div class="actions"><button id="traffic-prev" class="quiet" ${data.offset===0?'disabled':''}>上一页</button><span>明细 ${data.row_count?data.offset+1:0}–${Math.min(data.offset+100,data.row_count)} / ${data.row_count}</span><button id="traffic-next" class="quiet" ${data.offset+100>=data.row_count?'disabled':''}>下一页</button></div>`);
+ $('traffic-prev').onclick=()=>{trafficContext.offset=Math.max(0,data.offset-100);renderTraffic().catch(e=>message(e.message));};
+ $('traffic-next').onclick=()=>{trafficContext.offset=data.offset+100;renderTraffic().catch(e=>message(e.message));};
+ $('traffic-refresh').onclick=()=>renderTraffic().catch(e=>{$('traffic-body').textContent=e.message;});
+}
+$('traffic-close').onclick=closeTraffic;
+$('traffic-dialog').addEventListener('cancel',closeTraffic);
+$('all-traffic').onclick=()=>openTraffic();

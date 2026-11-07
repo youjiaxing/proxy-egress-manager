@@ -51,7 +51,7 @@ class Management:
             web.post("/api/action", self.action), web.get("/api/jobs/{job}", self.job),
             web.post("/api/backup", self.backup), web.post("/api/restore", self.restore),
             web.get("/api/diagnostics", self.diagnostics),
-            web.get('/api/quality', self.quality), web.get('/api/quality/export', self.quality_export),
+            web.get('/api/traffic', self.traffic), web.get('/api/quality', self.quality), web.get('/api/quality/export', self.quality_export),
             web.post('/api/tests', self.tests), web.post('/api/jobs/{job}/cancel', self.cancel_job),
         ])
         self.app.on_cleanup.append(self.cleanup)
@@ -240,6 +240,16 @@ class Management:
         if not task.cancelling(): task.cancel()
         return web.json_response({'ok':True})
 
+    async def traffic(self, request):
+        meter = self.controller.traffic
+        if meter is None: raise web.HTTPServiceUnavailable(text='流量统计尚未配置')
+        group = request.query.get('group')
+        node = request.query.get('node')
+        if group and node: raise ValueError('请选择一个统计视角')
+        offset = int(request.query.get('offset','0'))
+        if not 0 <= offset <= 50000: raise ValueError('分页无效')
+        return web.json_response(await meter.query(group, node, offset))
+
     async def quality(self, request):
         history = self.controller.history
         if history is None: return web.json_response({'records':[], 'series':[], 'coverage_start':None, 'error':'暂无质量历史'})
@@ -312,6 +322,9 @@ class Management:
                 self.controller.identities.clear()
                 restored["quality_epoch"] = identity()
                 self.controller.store.restore(restored, backup.get("events", []))
+                if self.controller.traffic:
+                    self.controller.traffic.restored = time.time()
+                    self.controller.traffic.meta_dirty = True
                 self.controller.history_epoch = restored["quality_epoch"]
                 if self.controller.history:
                     self.controller.history.record("system",None,"restore",{"reason":"配置已恢复；保留现有质量历史，后续样本重新分段"})

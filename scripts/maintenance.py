@@ -85,6 +85,11 @@ def main():
             import time
             history = History(directory)
             history.write([(time.time(), 'system', None, 'restore', json.dumps({'reason':'离线恢复配置；现有质量历史保留，后续样本重新分段'}))])
+            try:
+                from scheduler.traffic import mark_restore
+                mark_restore(directory)
+            except Exception:
+                print('流量统计恢复标记未保存；原流量库保留，可能缺少恢复边界。')
             finish_maintenance(directory)
             print('已恢复到备份点。启动前确认旧镜像/配置匹配；授权不恢复，必须重新验证。')
         finally:
