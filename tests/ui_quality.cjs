@@ -51,6 +51,8 @@ async function until(fn){for(let i=0;i<150;i++){if(fn())return;await pause();}th
  d.querySelector('#scope-options input[value=t]').checked=true;
  d.querySelector('[name=confirm_disconnect]').checked=true;
  d.getElementById('dialog-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+ assert.match(d.getElementById('dialog-title').textContent,/确认分组配置/);
+ d.getElementById('dialog-form').dispatchEvent(new w.Event('submit',{cancelable:true}));
  await until(()=>posts.some(p=>p.body.kind==='group_scope'));
  assert.deepEqual(posts.find(p=>p.body.kind==='group_scope').body,{kind:'group_scope',group:'1',group_uid:'g1',scope:{mode:'sources',ids:['t']},confirm_disconnect:true});
  d.getElementById('logout').click();await until(()=>d.getElementById('dashboard').hidden);

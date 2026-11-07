@@ -1,7 +1,7 @@
 'use strict';
 let csrf = '', state = null, activeTab = 'groups', refreshTimer, dialogSubmit;
 const operations = new Map();
-let layout='cards', sourceFilter='', qualityContext=null, qualitySequence=0, scopeSequence=0;
+let layout='cards', sourceFilter='', qualityContext=null, qualitySequence=0, scopeSequence=0, poolFlow=null;
 const selectedNodes=new Set();
 try {layout=localStorage.getItem('pem-layout')==='table'?'table':'cards';}catch{}
 
@@ -22,16 +22,19 @@ async function authenticated() { $('login').hidden = true; $('dashboard').hidden
 async function action(kind, data = {}) {
   const key = [kind, data.group || '', data.slot || '', data.node || ''].join(':');
   if ([...operations.values()].some(o=>o.key===key && o.running)) { message('该操作正在处理，请查看操作进度'); return; }
-  const operation = {key, groupUid:state?.groups.find(g=>g.id===data.group)?.uid, title:operationNames[kind] || '管理操作', started:Date.now(), running:true, detail:'正在提交…', session:operationSession};
+  const operation = {key, groupUid:data.group_uid||state?.groups.find(g=>g.id===data.group)?.uid, journey:!!poolFlow&&poolFlow.id===data.group, title:operationNames[kind] || '管理操作', started:Date.now(), running:true, detail:'正在提交…', session:operationSession};
   operations.set(operation, operation); renderOperations();
   try {
     const {job,cancellable} = await api('/api/action', {kind,...data,...(operation.groupUid?{group_uid:operation.groupUid}:{})});
     if(cancellable){operation.cancelJob=job;operation.cancelLabel='停止查找';}
     if (operation.session !== operationSession) return;
-    await waitForJob(job, operation);
+    return await waitForJob(job, operation);
   } catch (error) {
     if (operation.session !== operationSession) return;
     operation.running=false; operation.detail='未能确认结果：'+error.message+'。请先查看页面状态，勿重复提交。'; renderOperations();
+    const status=error.status>=400&&error.status<500?'error':'unknown';
+    operation.result={outcome:status,message:error.message};renderOperations();
+    return {status,message:error.message};
   }
 }
 function renderOperations() {
@@ -40,6 +43,7 @@ function renderOperations() {
   $('operation-list').innerHTML=items.map(o=>`<li><strong>${esc(o.title)}</strong><span>${esc(o.detail)}</span>${o.running?`<small>已等待 ${Math.floor((Date.now()-o.started)/1000)} 秒</small>${o.cancelJob?`<button class="quiet" data-cancel-test="${esc(o.cancelJob)}">${esc(o.cancelLabel||'取消测试')}</button>`:''}`:''}</li>`).join('');
   $('add-source').disabled=items.some(o=>o.running && o.key?.startsWith('source_add:'));
   if(state&&!$('dashboard').hidden)renderGroups();
+  if(poolFlow&&$('pool-live-progress')){const g=state.groups.find(g=>g.uid===poolFlow.uid),p=g?.selection_progress,o=items.filter(o=>o.groupUid===poolFlow.uid&&o.running).at(-1);$('pool-live-progress').textContent=p?`${p.stage} · ${p.current||''} · 已检查 ${p.checked}/${p.total}`:o?.detail||'正在等待结果…';}
 }
 async function waitForJob(job, operation) {
   operation ||= {title:'恢复备份', started:Date.now(), running:true, session:operationSession};
@@ -52,7 +56,7 @@ async function waitForJob(job, operation) {
     try { result = await api('/api/jobs/' + job); }
     catch (error) {
       if (operation.session !== operationSession) return;
-      if(error.status===400 || error.status===404) { operation.running=false; operation.detail='任务记录已不可用，无法确认结果，请查看订阅或分组当前状态。'; renderOperations(); return; }
+      if(error.status===400 || error.status===404) { operation.running=false; operation.detail='任务记录已不可用，无法确认结果，请查看订阅或分组当前状态。'; operation.result={outcome:'unknown',message:operation.detail};renderOperations(); return {status:'unknown',message:operation.detail}; }
       operation.detail='暂时无法查询进度，将自动重试；这不代表操作失败，请勿重复提交。'; renderOperations();
       await new Promise(resolve=>setTimeout(resolve,4000));
       continue;
@@ -60,7 +64,7 @@ async function waitForJob(job, operation) {
     if (operation.session !== operationSession) return;
     if (result.status !== 'running') {
       operation.running=false;
-      operation.result=result.result;
+      operation.result=result.status==='error'?{outcome:'error',message:result.message}:result.result;
       operation.detail=result.status==='error'?'失败：'+result.message:result.result?.message||'处理完成。';
       if(result.result?.length) {operation.detail+=' 已完成 '+result.result.length+' 个节点，详情见节点连接质量。';}
       if(operation.diagnostic && qualityContext) await renderQuality();
@@ -70,11 +74,11 @@ async function waitForJob(job, operation) {
           const group=state.groups.find(g=>g.id===operation.key.split(':')[1]);
           if(group) operation.detail='处理完成：'+(group.lease_valid?'可用':'暂不可用')+'；'+groupReason(group.reason);
         }
-      } catch { operation.detail+=' 页面状态暂时刷新失败，请稍后重试。'; }
+      } catch { result.stateRefreshFailed=true;operation.detail+=' 页面状态暂时刷新失败，请稍后重试。'; }
       if (operation.session !== operationSession) return;
       renderOperations();
-      if(result.result?.outcome==='evaluated' && !$('dialog').open)openScope(result.result.group,result.result.selection.recommended);
-      return;
+      if(result.result?.outcome==='evaluated' && !operation.journey && !$('dialog').open && !poolFlow)openScope(result.result.group,result.result.selection.recommended);
+      return result;
     }
     operation.detail=result.message&&result.message!=='操作已排队'&&result.message!=='操作已完成'?result.message:'排队或处理中；节点检测可能需要数分钟，请勿重复提交。'; renderOperations();
   }
@@ -144,7 +148,7 @@ function groupFeedback(g){
   const result=local?.result||g.last_action;
   const attempts=progress?.attempts||result?.selection?.attempts||[];
   if(!running&&!result&&!local)return '';
-  const title=running?'正在处理本组操作':result?.outcome==='applied'||result?.outcome==='saved_available'?'已生效':result?.outcome?.startsWith('saved')?'清单已保存':result?.outcome==='not_applied'?'未应用新节点':'上次操作结果';
+  const title=running?'正在处理本组操作':result?.outcome==='error'?'本次操作未完成':result?.outcome==='unknown'?'本次结果待核对':result?.outcome==='applied'||result?.outcome==='saved_available'?'已生效':result?.outcome?.startsWith('saved')?'清单已保存':result?.outcome==='not_applied'?'未应用新节点':'上次操作结果';
   const detail=running?(progress?`${progress.stage}：${progress.current||progress.requested} · 已检查 ${progress.checked}/${progress.total} 个候选（本次最多 ${progress.limit} 个）`:local.detail):(local?.detail||result.message);
   return `<section class="group-feedback ${running?'is-running':''}" aria-live="polite"><div class="section-title"><strong>${esc(title)}</strong>${!running&&result?.finished?`<small>${date(result.finished)}</small>`:''}</div><p>${esc(detail)}</p>${running&&progress?`<progress value="${progress.checked}" max="${Math.max(progress.limit,1)}" aria-label="已检查候选数"></progress><button class="quiet" data-stop-search="${esc(g.uid)}">停止查找</button>`:''}${attempts.length?`<details ${running?'open':''}><summary>查看已检查的 ${attempts.length} 个节点及结果</summary><ul>${attempts.map(a=>`<li><strong>${esc(a.name)}</strong><br>${esc(a.reason)}</li>`).join('')}</ul></details>`:''}</section>`;
 }
@@ -219,11 +223,13 @@ function fillSettings() {
   $('alerts-form').elements.alert_url.placeholder = state.settings.alert_configured?'已配置；留空保留':'https://…';
 }
 function formDialog(title, fields, submit, submitLabel = '确认') {
+  scopeSequence++;
+  $('dialog-cancel').textContent='取消';
   hideHelp();
-  $('dialog-title').textContent = title; $('dialog-fields').innerHTML = fields; $('dialog-form').querySelector('[type=submit]').textContent = submitLabel; $('dialog-form').querySelector('[type=submit]').hidden=false; dialogSubmit = submit; $('dialog').showModal();
+  $('dialog-title').textContent = title; $('dialog-fields').innerHTML = fields; $('dialog-form').querySelector('[type=submit]').textContent = submitLabel; $('dialog-form').querySelector('[type=submit]').hidden=false; dialogSubmit = submit; if(!$('dialog').open)$('dialog').showModal();
 }
 function clearDialog() { scopeSequence++; $('dialog').classList.remove('pool-dialog'); $('dialog-fields').replaceChildren(); dialogSubmit = null; }
-function closeDialog() { if ($('dialog').open) $('dialog').close(); clearDialog(); }
+function closeDialog() { poolFlow=null; if ($('dialog').open) $('dialog').close(); clearDialog(); }
 function guarded(fn) { return (...args) => Promise.resolve(fn(...args)).catch(e=>message(e.message)); }
 $('login-form').onsubmit = guarded(async e=>{e.preventDefault(); const password=e.target.elements.password.value; const result=await api('/api/login',{password}); csrf=result.csrf; e.target.reset(); await authenticated();});
 $('logout').onclick = guarded(async()=>{await api('/api/logout',{}); csrf=''; showLogin();});
@@ -232,8 +238,8 @@ for (const b of document.querySelectorAll('[data-tab]')) b.onclick=guarded(async
 $('node-filter').oninput = renderNodes; $('us-only').onchange = renderNodes;
 $('source-filter').onchange=e=>{sourceFilter=e.target.value;selectedNodes.clear();renderNodes();};
 $('dialog-close').onclick = $('dialog-cancel').onclick = closeDialog;
-$('dialog').addEventListener('close',()=>{if (!$('dialog').open) clearDialog();});
-$('dialog-form').onsubmit = guarded(async e=>{e.preventDefault(); const formData=new FormData(e.target),values=Object.fromEntries(formData), submit=dialogSubmit; if(formData.has('scope_mode')) values.scope_ids=formData.getAll('ids'); closeDialog(); await submit(values);});
+$('dialog').addEventListener('close',()=>{if (!$('dialog').open) {poolFlow=null;clearDialog();}});
+$('dialog-form').onsubmit = guarded(async e=>{e.preventDefault(); const formData=new FormData(e.target),values=Object.fromEntries(formData), submit=dialogSubmit; if(formData.has('scope_mode')) values.scope_ids=formData.getAll('ids'); if(!submit?.keepOpen)closeDialog(); if(submit)await submit(values);});
 $('add-group').onclick=()=>formDialog('新建分组','<p>每个分组分配一个独立的代理入口，供业务填写。创建后会自动寻找并验证节点。</p><label>分组名称<input name="name" placeholder="例如：业务 A" required maxlength="100"></label>',v=>action('group_add',v));
 $('add-source').onclick=()=>formDialog('添加订阅来源','<label>名称<input name="name" required maxlength="100"></label><label>HTTPS 订阅 URL<input name="url" type="url" placeholder="https://…" autocomplete="off"></label><label>或导入文本<textarea name="content" rows="7" placeholder="proxies: 或 URI 列表"></textarea></label>',v=>action('source_add',v));
 document.addEventListener('pointerover',e=>{const b=e.target.closest('[data-help]');if(b || $('help-tooltip').contains(e.target))clearTimeout(helpTimer);if(b && b!==helpTarget) showHelp(b);});
@@ -250,9 +256,15 @@ document.addEventListener('click',guarded(async e=>{
   if(b.dataset.trafficGroup)openTraffic({group:b.dataset.trafficGroup});
   if(b.dataset.trafficNode)openTraffic({node:b.dataset.trafficNode});
   if(b.dataset.configure)openGroupConfiguration(b.dataset.configure);
-  if(b.dataset.scope){const id=b.dataset.scope;closeDialog();openScope(id);}
-  if(b.dataset.viewRecommendation){const id=b.dataset.viewRecommendation,g=state.groups.find(g=>g.id===id);closeDialog();openScope(id,g.last_evaluation.recommended);}
-  if(b.dataset.evaluate){const id=b.dataset.evaluate,g=state.groups.find(g=>g.id===id);if(g.paused||g.pinned){message('请先启用分组并允许自动换节点，再开始自动优选。');return;}if(confirm('按需评估当前允许范围（最多100个候选），会使用订阅流量；完成后推荐节点池供你确认，不立即切换业务节点。')){closeDialog();await action('group_evaluate',{group:id});}}
+  if(b.dataset.scope)openScope(b.dataset.scope);
+  if(b.dataset.viewRecommendation){const id=b.dataset.viewRecommendation,g=state.groups.find(g=>g.id===id);openScope(id,g.last_evaluation.recommended);}
+  if(b.dataset.evaluate)await startPoolEvaluation(b.dataset.evaluate);
+  if(b.dataset.flowBack)openScope(poolFlow.id,poolFlow.recommended,poolFlow.draft);
+  if(b.dataset.flowChoose)openGroupConfiguration(b.dataset.flowChoose);
+  if(b.dataset.flowQuality)openQuality({group:b.dataset.flowQuality});
+  if(b.dataset.flowRefresh){await refresh();if(poolFlow)showPoolResult(poolFlow,{...poolFlow.response,stateRefreshFailed:false,checked:true});}
+  if(b.dataset.flowAction){const flow=poolFlow;poolGroup(flow);showPoolPending(flow,'正在处理', '正在'+operationNames[b.dataset.flowAction]+'，请等待验证结果。');const response=await action(b.dataset.flowAction,{group:flow.id,group_uid:flow.uid,...(b.dataset.flowAction==='group_pin'?{pinned:false}:{})});if(poolFlow===flow)showPoolResult(flow,response);}
+
   if(b.dataset.qualityGroup)openQuality({group:b.dataset.qualityGroup});
   if(b.dataset.qualityNode)openQuality({node:b.dataset.qualityNode});
   if(b.dataset.cancelTest){await api('/api/jobs/'+b.dataset.cancelTest+'/cancel',{});message('已请求停止，将在当前检查结束后停止。');}
@@ -291,9 +303,62 @@ $('restore').onclick=guarded(async()=>{const f=$('restore-file').files[0]; if(!f
 
 function openGroupConfiguration(id){
   const g=state.groups.find(g=>g.id===id),blocked=g.paused||g.pinned,busy=!!g.selection_progress;
+  poolFlow={id,uid:g.uid,stage:'choose'};
   const evaluation=g.last_evaluation;
-  formDialog('配置分组 · '+g.name,`<p>先为分组选一组可用节点。正常使用其中一个，故障后在池内自动切换；业务代理地址不变。</p><p class="notice">当前节点池：${esc(describeScope(g))}。${g.paused?'分组已暂停：可以编辑并保存节点池，保存后仍需启用分组。':g.pinned?'当前节点已固定：可以编辑并保存节点池；解除固定后才允许自动切换。':'分组可用且当前节点仍在新池内时保持连接；暂不可用时，修改范围会启动查找，可能换用其他合格节点。'}</p>${busy?'<p role="status">本组正在评估或查找节点，请在卡片查看进度或停止后再配置。</p>':''}<div class="configuration-choices"><section><h3>1. 自动优选节点池</h3><p>评估当前允许范围，按出口资格和本次延迟推荐最多 3 个节点。先查看结果，再确认保存。</p><p class="status-note">只在你开始评估时使用流量，单次最多 100 个候选；不改变当前业务节点。</p><button type="button" data-evaluate="${esc(id)}" ${blocked||busy?'disabled':''}>开始评估并推荐</button>${blocked?'<p>开始评估前，请先在分组卡片启用分组并允许自动换节点；不会替你解除暂停或固定。</p>':''}${evaluation?`<p>上次评估：${date(evaluation.finished)} · ${evaluation.checked}/${evaluation.total} 个候选 · 推荐 ${evaluation.recommended?.length||0} 个</p><button type="button" class="quiet" data-view-recommendation="${esc(id)}" ${busy?'disabled':''}>查看上次结果并调整</button>`:''}</section><section><h3>2. 手动选择多个节点</h3><p>对照节点的验证结果、延迟和已有质量记录，勾选多个节点组成节点池。</p><p class="status-note">打开列表只读取已有记录，不测速。未知数据会明确标注，保存后仍需验证才能使用。</p><button type="button" data-scope="${esc(id)}" ${busy?'disabled':''}>查看节点并多选</button></section></div><p class="status-note">配置节点池不会让多个节点同时承载业务。只想临时切换当前节点，可在卡片“更多操作”中选择“立即切换当前节点”。</p>`,()=>{});
+  formDialog('配置分组 · '+g.name,`${poolSteps(1)}<p>先为分组选一组可用节点。正常使用其中一个，故障后在池内自动切换；业务代理地址不变。</p><p class="notice">当前节点池：${esc(describeScope(g))}。${g.paused?'分组已暂停：可以编辑并保存节点池，保存后仍需启用分组。':g.pinned?'当前节点已固定：可以编辑并保存节点池；解除固定后才允许自动切换。':'分组可用且当前节点仍在新池内时保持连接；暂不可用时，修改范围会启动查找，可能换用其他合格节点。'}</p>${busy?'<p role="status">本组正在评估或查找节点，请在卡片查看进度或停止后再配置。</p>':''}<div class="configuration-choices"><section><h3>1. 自动优选节点池</h3><p>评估当前允许范围，按出口资格和本次延迟推荐最多 3 个节点。先查看结果，再确认保存。</p><p class="status-note">只在你开始评估时使用流量，单次最多 100 个候选；不改变当前业务节点。</p><button type="button" data-evaluate="${esc(id)}" ${blocked||busy?'disabled':''}>开始评估并推荐</button>${blocked?'<p>开始评估前，请先在分组卡片启用分组并允许自动换节点；不会替你解除暂停或固定。</p>':''}${evaluation?`<p>上次评估：${date(evaluation.finished)} · ${evaluation.checked}/${evaluation.total} 个候选 · 推荐 ${evaluation.recommended?.length||0} 个</p><button type="button" class="quiet" data-view-recommendation="${esc(id)}" ${busy?'disabled':''}>查看上次结果并调整</button>`:''}</section><section><h3>2. 手动选择多个节点</h3><p>对照节点的验证结果、延迟和已有质量记录，勾选多个节点组成节点池。</p><p class="status-note">打开列表只读取已有记录，不测速。未知数据会明确标注，保存后仍需验证才能使用。</p><button type="button" data-scope="${esc(id)}" ${busy?'disabled':''}>查看节点并多选</button></section></div><p class="status-note">配置节点池不会让多个节点同时承载业务。只想临时切换当前节点，可在卡片“更多操作”中选择“立即切换当前节点”。</p>`,()=>{});
   $('dialog-form').querySelector('[type=submit]').hidden=true;
+}
+function poolSteps(step){return `<ol class="pool-steps" aria-label="配置进度">${['选择方式','挑选节点','确认配置','查看结果'].map((label,i)=>`<li ${i+1===step?'aria-current="step"':''}>${i+1}. ${label}</li>`).join('')}</ol>`;}
+function poolGroup(flow){const g=state.groups.find(g=>g.id===flow.id&&g.uid===flow.uid);if(!g)throw Error('分组已被删除或重建，请关闭后重新配置。');return g;}
+function reviewPoolSelection(values){
+  const flow=poolFlow,g=poolGroup(flow),ids=values.scope_ids||[];
+  if(values.scope_mode!=='all'&&!ids.length){$('pool-error').hidden=false;$('pool-error').textContent='请至少选择一个节点或订阅，再确认节点池。';return;}
+  flow.draft={...values,scope_ids:[...ids]};flow.stage='review';
+  const names=values.scope_mode==='all'?['全部已启用订阅的节点']:values.scope_mode==='sources'?ids.map(ref=>state.sources.find(s=>s.uid===ref)?.name||'已失效订阅'):ids.map(ref=>Object.values(state.nodes).find(n=>n.ref===ref)?.name||'已失效节点');
+  const current=state.nodes[g.node],source=state.sources.find(s=>s.slot===current?.source);
+  const retained=!current||values.scope_mode==='all'||ids.includes(values.scope_mode==='nodes'?current.ref:source?.uid);
+  const submit=v=>savePoolConfiguration(flow,v.confirm_disconnect==='on');submit.keepOpen=true;
+  formDialog('确认分组配置 · '+g.name,`${poolSteps(3)}<h3>将保存的节点池</h3><ul class="pool-selection">${names.map(n=>`<li>${esc(n)}</li>`).join('')}</ul><p>当前使用：${esc(current?.name||'尚无可用节点')}</p><p class="notice">${g.paused?'保存后仍暂停，需要启用分组才能使用。':g.pinned?'保存后仍固定当前节点，需要允许自动换节点才能进行池内故障切换。':g.lease_valid&&retained?'当前节点保留在池内，保存后继续使用，已有连接保持。':'保存后按新范围检查；只有完整验证通过才会启用，暂时无合格节点时不会放行。'}</p>${!retained?`<label><input type="checkbox" name="confirm_disconnect" ${values.confirm_disconnect==='on'?'checked':''}>当前节点将被移出，我确认断开已有连接并重新验证</label>`:''}<p>正常保持一个节点，故障后在这个池内寻找合格备用。</p><div id="pool-error" class="notice" role="alert" hidden></div><button type="button" class="quiet" data-flow-back="true">返回修改，保留已选节点</button>`,submit,'确认保存');
+  flow.requiresDisconnect=!retained;
+}
+function showPoolPending(flow,title,detail,step=4){
+  flow.stage='pending';
+  formDialog(title,`${poolSteps(step)}<div role="status" aria-live="polite"><p>${esc(detail)}</p><p id="pool-live-progress">提交后会自动更新结果；请勿重复保存。</p></div>${step===2?`<button type="button" class="quiet" data-stop-search="${esc(flow.uid)}">停止本次评估</button>`:''}`,()=>{});
+  $('dialog-cancel').textContent='关闭，后台继续';
+  $('dialog-form').querySelector('[type=submit]').hidden=true;
+}
+async function savePoolConfiguration(flow,confirmed){
+  if(poolFlow!==flow||flow.stage==='pending')return;
+  poolGroup(flow);
+  if(flow.requiresDisconnect&&!confirmed){$('pool-error').hidden=false;$('pool-error').textContent='当前节点将被移出，请先确认断开影响，或返回修改保留当前节点。';return;}
+  const data={group:flow.id,group_uid:flow.uid,scope:{mode:flow.draft.scope_mode,ids:flow.draft.scope_mode==='all'?[]:flow.draft.scope_ids},confirm_disconnect:confirmed};
+  showPoolPending(flow,'正在保存分组配置','正在保存节点池；如需更换节点，将等待验证结果。');
+  const response=await action('group_scope',data);
+  if(poolFlow===flow)showPoolResult(flow,response);
+}
+function showPoolResult(flow,response){
+  const g=poolGroup(flow);flow.stage='result';flow.response=response;
+  const failed=response?.status==='error',unknown=!response||(response.status==='unknown'&&!response.checked)||response.stateRefreshFailed;
+  const outcome=response?.result?.outcome;
+  const saved=!failed&&!unknown&&outcome?.startsWith('saved');
+  flow.saved=flow.saved||saved;
+  const title=failed?'配置未完成':unknown?'暂时无法确认保存结果':response?.status==='unknown'?'已核对实际状态，请选择下一步':flow.saved?(g.lease_valid?'节点池已保存，分组可用':'节点池已保存，尚未可用'):'操作已结束，节点池尚未保存';
+  const next=unknown?'结果尚未核对，请先刷新实际状态；不要重复提交配置。':response?.status==='unknown'?'上次提交是否执行仍不确定。当前节点池和状态已重新读取；请对照本次选择，再决定是否返回修改。':g.paused?'分组目前暂停。启用后才会开始验证和转发。':g.pinned?'当前节点仍被固定。允许自动换节点后，故障时才会在池内切换。':g.lease_valid?'已在节点池内保持当前节点；发生持续故障时自动寻找池内备用。':'系统只在完整出口验证通过后放行。可以按下方原因调整节点池，或立即重试。';
+  formDialog(title,`${poolSteps(4)}<div role="status"><p>${esc(response?.message||response?.result?.message||'请核对当前配置，勿重复提交。')}</p><dl class="details"><dt>当前节点池</dt><dd>${esc(describeScope(g))}</dd><dt>正在使用</dt><dd>${esc(state.nodes[g.node]?.name||'尚无合格节点')}</dd><dt>实际状态</dt><dd>${response?.stateRefreshFailed?'等待刷新核对':g.lease_valid?'可用':g.paused?'已暂停':'暂不可用'} · ${esc(groupReason(g.reason))}</dd></dl><p class="notice">${esc(next)}</p></div><div class="actions">${flow.draft&&!unknown?'<button type="button" class="quiet" data-flow-back="true">返回修改，保留已选节点</button>':''}<button type="button" class="quiet" data-flow-refresh="true">刷新实际状态</button>${!unknown&&!failed&&g.paused?`<button type="button" data-flow-action="group_resume">启用分组并验证</button>`:!unknown&&!failed&&g.pinned?'<button type="button" data-flow-action="group_pin">允许自动换节点</button>':!unknown&&!failed&&!g.lease_valid?'<button type="button" data-flow-action="group_retry">立即重试验证</button>':''}${!unknown&&g.lease_valid?`<button type="button" class="quiet" data-flow-quality="${esc(g.id)}">查看连接质量</button>`:''}</div>`,()=>{});
+  $('dialog-form').querySelector('[type=submit]').hidden=true;
+  $('dialog-cancel').textContent='完成并关闭';
+}
+async function startPoolEvaluation(id){
+  const g=state.groups.find(g=>g.id===id);
+  if(g.paused||g.pinned){message('请先启用分组并允许自动换节点，再开始自动优选。');return;}
+  if(!confirm('按需评估当前允许范围（最多100个候选），会使用订阅流量；完成后推荐节点池供你确认，不立即切换业务节点。'))return;
+  const flow=poolFlow={id,uid:g.uid,stage:'evaluating'};
+  showPoolPending(flow,'正在评估节点池','正在检查候选质量，完成后会自动进入节点多选页；当前业务节点保持不变。',2);
+  flow.stage='evaluating';
+  const response=await action('group_evaluate',{group:id,group_uid:g.uid});
+  if(poolFlow!==flow)return;
+  if(response?.status==='done'&&response.result?.outcome==='evaluated')openScope(id,response.result.selection.recommended);
+  else showPoolResult(flow,response);
 }
 function poolNode(g,n){
   const evaluation=g.last_evaluation?.attempts?.find(a=>a.node_ref===n.ref),p=n.last_probe;
@@ -304,30 +369,33 @@ function poolNode(g,n){
   return {n,evaluation,ms:ms>=0?ms:null,qualified:enabled&&!conflict&&(newer||!evaluation?!!p?.us:!!evaluation.eligible),
     reason:!enabled?'节点或订阅已停用':conflict?'出口与其他分组重复':newer||!evaluation?p?.reason||'未评估':evaluation.reason,time:newer||!evaluation?p?.time:evaluation.time};
 }
-function openScope(id,recommended){
+function openScope(id,recommended,draft){
   const g=state.groups.find(g=>g.id===id),scope=g.scope||{mode:'all',ids:[]};
-  formDialog(recommended?'自动优选 · 确认节点池':'手动配置节点池',`<p>勾选多个节点组成可用池；正常保持一个，故障时在池内切换。分组可用且当前节点仍在池内时保持连接；暂不可用时，修改范围会启动查找。需要换节点时重新验证，通过才启用。</p>${recommended?`<p class="notice">已按本次检查结果推荐 ${recommended.length} 个节点。排序先看 HTTP 检查失败数，再看较慢目标的 HTTP 延迟和 UDP 耗时；单次评估不代表长期稳定。</p>`:''}<label>节点池来源<select name="scope_mode" id="scope-mode"><option value="all">全部已启用订阅</option><option value="sources">指定订阅（含以后新增节点）</option><option value="nodes">手动勾选多个节点</option></select></label><div class="pool-filters"><input id="scope-search" type="search" placeholder="搜索节点或订阅"><label><input id="scope-qualified" type="checkbox">只看上次评估通过的节点</label></div><div id="scope-options" class="scope-options"></div><div id="scope-notice" class="notice"></div><label><input type="checkbox" name="confirm_disconnect">若当前节点被移出，我确认断开已有连接</label><p class="status-note">延迟包含代理建连，显示同次测试中较慢 HTTP 目标的耗时。历史通过比例与波动来自单独目标和来源，不是真实丢包率；没有记录就显示未知。时间较早的评估需复验。固定或暂停状态不会因保存解除。</p>`,v=>action('group_scope',{group:id,scope:{mode:v.scope_mode,ids:v.scope_ids||[]},confirm_disconnect:v.confirm_disconnect==='on'}),'确认保存节点池');
+  poolFlow={id,uid:g.uid,stage:'select',recommended,draft};
+  const submit=v=>reviewPoolSelection(v);submit.keepOpen=true;
+  formDialog(recommended?'自动优选 · 调整节点池':'手动配置节点池',`${poolSteps(2)}<p class="status-note">当前范围：${esc(describeScope(g))}。选择固定节点后，只有确认保存才会改为所选节点清单。</p><button type="button" class="quiet" data-flow-choose="${esc(id)}">返回选择方式</button><div id="pool-error" class="notice" role="alert" hidden></div><p>勾选多个节点组成可用池；正常保持一个，故障时在池内切换。分组可用且当前节点仍在池内时保持连接；暂不可用时，修改范围会启动查找。需要换节点时重新验证，通过才启用。</p>${recommended?`<p class="notice">已按本次检查结果推荐 ${recommended.length} 个节点。排序先看 HTTP 检查失败数，再看较慢目标的 HTTP 延迟和 UDP 耗时；单次评估不代表长期稳定。</p>`:''}<label>节点池来源<select name="scope_mode" id="scope-mode"><option value="all">全部已启用订阅</option><option value="sources">指定订阅（含以后新增节点）</option><option value="nodes">手动勾选多个节点</option></select></label><div class="pool-filters"><input id="scope-search" type="search" placeholder="搜索节点或订阅"><label><input id="scope-qualified" type="checkbox">只看上次评估通过的节点</label></div><p id="scope-selection-summary" role="status" aria-live="polite"></p><div id="scope-options" class="scope-options"></div><div id="scope-notice" class="notice"></div><label><input type="checkbox" name="confirm_disconnect">若当前节点被移出，我确认断开已有连接</label><p class="status-note">延迟包含代理建连，显示同次测试中较慢 HTTP 目标的耗时。历史通过比例与波动来自单独目标和来源，不是真实丢包率；没有记录就显示未知。时间较早的评估需复验。固定或暂停状态不会因保存解除。</p>`,submit,'下一步：确认节点池');
   $('dialog').classList.add('pool-dialog');
-  $('scope-mode').value='nodes';
-  const selected=new Set(recommended|| (scope.mode==='nodes'?scope.ids:[])),selectedSources=new Set(scope.mode==='sources'?scope.ids:[]);
+  $('scope-mode').value=draft?.scope_mode||(recommended?'nodes':scope.mode==='sources'?'sources':'nodes');
+  const selected=new Set(draft?.scope_mode==='nodes'?draft.scope_ids:recommended|| (scope.mode==='nodes'?scope.ids:[])),selectedSources=new Set(draft?.scope_mode==='sources'?draft.scope_ids:scope.mode==='sources'?scope.ids:[]);
   const sequence=++scopeSequence;let historyMap={},historyStatus='loading';
   const rows=Object.values(state.nodes).map(n=>poolNode(g,n)).sort((a,b)=>Number(b.qualified)-Number(a.qualified)||(a.ms??Infinity)-(b.ms??Infinity)||Number(b.n.hint_us)-Number(a.n.hint_us));
+  const selectionSummary=()=>{$('scope-selection-summary').textContent=$('scope-mode').value==='all'?'使用全部已启用订阅':$('scope-mode').value==='sources'?`已选择 ${selectedSources.size} 个订阅`:`已选择 ${selected.size} 个节点；下一步确认后才保存`;};
   const draw=()=>{
     const mode=$('scope-mode').value;
     if(mode==='nodes'){
       const body=rows.map(r=>{const {n,evaluation:e}=r,h=Object.hasOwn(historyMap,n.ref)?historyMap[n.ref]:e?.history;return `<tr data-pool-row data-qualified="${r.qualified}"><td><label><input type="checkbox" name="ids" value="${esc(n.ref)}" ${selected.has(n.ref)?'checked':''}>${esc(n.name)}</label><small>${esc(state.sources.find(s=>s.slot===n.source)?.name||'')}</small></td><td>${r.time?(r.qualified?'上次评估通过':'上次未通过'):'未评估'}<br><small>${esc(r.reason)}<br>${r.time?date(r.time):''}</small></td><td>${r.ms==null?'—':r.ms+' ms'}<br><small>较慢 HTTP 目标${e?.http_failed?' · '+e.http_failed+' 次 HTTP 检查失败':''}</small></td><td>${h?`${h.successes}/${h.attempts} 次检查通过<br>波动 ${h.variation_ms??'—'} ms<br><small>${esc(h.target)} · ${h.origin==='running'?'运行检查':'候选检查'}</small>`:(historyStatus==='loading'?'正在读取已有记录…':historyStatus==='error'?'历史暂不可读':Object.hasOwn(historyMap,n.ref)?'暂无同配置历史统计':'尚未读取，点击详情')}<br><button type="button" class="quiet" data-pool-quality="${esc(n.ref)}">质量详情</button></td></tr>`;}).join('');
       const stale=[...selected].filter(ref=>!rows.some(r=>r.n.ref===ref));
       $('scope-options').innerHTML=`<div class="table-wrap"><table><thead><tr><th>选择 / 节点 / 订阅</th><th>出口验证</th><th>延迟</th><th>稳定性记录（最近24h）</th></tr></thead><tbody>${body}</tbody></table></div>${stale.map(ref=>`<label><input type="checkbox" name="ids" value="${esc(ref)}" checked>已失效选择（保留）</label>`).join('')}`;
-      $('scope-options').querySelectorAll('[name=ids]').forEach(box=>box.onchange=()=>box.checked?selected.add(box.value):selected.delete(box.value));
+      $('scope-options').querySelectorAll('[name=ids]').forEach(box=>box.onchange=()=>{box.checked?selected.add(box.value):selected.delete(box.value);selectionSummary();});
       $('scope-options').querySelectorAll('[data-pool-quality]').forEach(b=>b.onclick=()=>openQuality({node:b.dataset.poolQuality}));
     }else if(mode==='sources'){
       const sources=state.sources.map(s=>({id:s.uid,name:s.name}));
       if(scope.mode==='sources')for(const ref of scope.ids)if(!sources.some(s=>s.id===ref))sources.push({id:ref,name:'已失效的订阅选择（保留）'});
       $('scope-options').innerHTML=sources.map(s=>`<label><input type="checkbox" name="ids" value="${esc(s.id)}" ${selectedSources.has(s.id)?'checked':''}>${esc(s.name)}</label>`).join('');
-      $('scope-options').querySelectorAll('[name=ids]').forEach(box=>box.onchange=()=>box.checked?selectedSources.add(box.value):selectedSources.delete(box.value));
+      $('scope-options').querySelectorAll('[name=ids]').forEach(box=>box.onchange=()=>{box.checked?selectedSources.add(box.value):selectedSources.delete(box.value);selectionSummary();});
     }else $('scope-options').innerHTML='<p>使用全部已启用订阅的未禁用节点。</p>';
     $('scope-notice').textContent=`当前节点：${state.nodes[g.node]?.name||'无合格节点'}。${g.paused?'分组已暂停，保存后仍保持暂停；需回到卡片启用。':g.pinned?'当前节点已固定，保存不会解除固定；需允许自动换节点后才会池内切换。':'分组可用且当前节点保留在池内时保持连接；暂不可用时，修改范围会启动查找。移出当前节点时先断开并验证新节点。'}`;
-    $('scope-qualified').disabled=mode!=='nodes';filter();
+    $('scope-qualified').disabled=mode!=='nodes';selectionSummary();filter();
   };
   const filter=()=>{const text=$('scope-search').value.toLowerCase(),only=$('scope-qualified').checked;$('scope-options').querySelectorAll('[data-pool-row]').forEach(r=>r.hidden=!r.textContent.toLowerCase().includes(text)||(only&&r.dataset.qualified!=='true'));if($('scope-mode').value==='sources')$('scope-options').querySelectorAll('label').forEach(l=>l.hidden=!l.textContent.toLowerCase().includes(text));};
   $('scope-mode').onchange=draw;$('scope-search').oninput=filter;$('scope-qualified').onchange=filter;draw();

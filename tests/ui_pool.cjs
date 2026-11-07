@@ -41,6 +41,8 @@ async function until(fn){for(let i=0;i<200;i++){if(fn())return;await pause();}th
  assert.match(d.getElementById('scope-options').textContent,/尚未读取|正在读取|暂无同配置历史统计/);
  d.querySelector('#scope-options [value="s/a"]').checked=false;
  d.getElementById('dialog-form').dispatchEvent(new w.Event('submit',{cancelable:true}));
+ assert.match(d.getElementById('dialog-title').textContent,/确认分组配置/);
+ d.getElementById('dialog-form').dispatchEvent(new w.Event('submit',{cancelable:true}));
  await until(()=>posts.some(p=>p.kind==='group_scope'));
  assert.deepEqual(posts.find(p=>p.kind==='group_scope').scope,{mode:'nodes',ids:['s/b']});
  assert.ok(posts.every(p=>p.kind!=='group_switch'));
