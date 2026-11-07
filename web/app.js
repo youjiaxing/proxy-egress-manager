@@ -3,6 +3,7 @@ let csrf = '', state = null, activeTab = 'groups', refreshTimer, dialogSubmit;
 const operations = new Map();
 let layout='cards', sourceFilter='', qualityContext=null, qualitySequence=0, scopeSequence=0, poolFlow=null;
 const selectedNodes=new Set();
+const testingNodes=new Map();
 try {layout=localStorage.getItem('pem-layout')==='table'?'table':'cards';}catch{}
 
 let operationSession = 0;
@@ -80,6 +81,7 @@ async function waitForJob(job, operation) {
       if(result.result?.outcome==='evaluated' && !operation.journey && !$('dialog').open && !poolFlow)openScope(result.result.group,result.result.selection.recommended);
       return result;
     }
+    if(operation.diagnostic){try{await refresh();}catch{}}
     operation.detail=result.message&&result.message!=='操作已排队'&&result.message!=='操作已完成'?result.message:'排队或处理中；节点检测可能需要数分钟，请勿重复提交。'; renderOperations();
   }
 }
@@ -198,20 +200,30 @@ function updateSourceFilter(){
   select.value=sourceFilter;
 }
 function visibleNodes(){const filter=$('node-filter').value.toLowerCase(),usOnly=$('us-only').checked;return Object.values(state.nodes).filter(n=>(!sourceFilter||String(n.source)===sourceFilter)&&(!usOnly||n.hint_us||n.last_probe?.us)&&(n.name.toLowerCase().includes(filter)||(state.sources.find(s=>s.slot===n.source)?.name||'').toLowerCase().includes(filter)));}
-function nodeSummary(n){
+function nodeLatency(n){
+  if(testingNodes.has(n.ref||n.id)&&!(n.last_test?.test==='http'&&n.last_test.current!==false&&n.last_test.time>=testingNodes.get(n.ref||n.id)))return {text:'测试中…',tone:'pending',time:null};
   const p=n.last_probe,t=n.last_test;
-  const metric=t?.test==='http'?t.samples?.find(s=>s.method==='http-get-headers'):p?.samples?.find(s=>s.method==='http-get-headers');
-  const when=t?.test==='http'?t.time:p?.time;
-  return `${metric?.ok?esc(metric.ms)+' ms':'请求耗时：—'}<br><small>${when?date(when)+(Date.now()/1000-when>180?' · 旧记录':''):'未检测'} · 不是 ping</small><br>${esc(p?.reason||'尚未完成出口验证')}`;
+  const manual=t?.test==='http'&&t.current!==false&&(!p?.time||t.time>=p.time);
+  const samples=manual?t.samples:p?.samples;
+  const metrics=(samples||[]).filter(s=>s.method==='http-get-headers');
+  const when=manual?t.time:p?.time;
+  if(manual&&t.error)return {text:t.error==='timeout'?'超时':'测试失败',tone:'failed',time:when};
+  if(!metrics.length)return {text:'未测试',tone:'unknown',time:when};
+  if(metrics.some(s=>!s.ok))return {text:'未连通',tone:'failed',time:when};
+  const values=metrics.map(s=>s.ms).filter(ms=>ms!=null);
+  if(!values.length)return {text:'无耗时',tone:'unknown',time:when};
+  const ms=Math.round(Math.max(...values));return {text:ms+' ms',tone:ms<300?'good':ms<800?'medium':'slow',time:when};
 }
+function nodeSummary(n){const m=nodeLatency(n);return `<strong class="latency-${m.tone}">${esc(m.text)}</strong><br><small>${m.time?date(m.time)+(Date.now()/1000-m.time>180?' · 旧记录':''):'点击测延迟'} · HTTP 请求耗时</small>`;}
+
 function renderNodes() {
   if(!state)return;
   const nodes=visibleNodes();
   $('node-table').hidden=layout==='cards';$('node-cards').hidden=layout!=='cards';
   const select=n=>`<input class="node-select" type="checkbox" data-select-node="${esc(n.ref||n.id)}" aria-label="选择 ${esc(n.name)}" ${selectedNodes.has(n.ref||n.id)?'checked':''}>`;
-  const actions=n=>`<button class="quiet" data-traffic-node="${esc(n.ref||n.id)}">流量用量</button><button class="quiet" data-quality-node="${esc(n.ref||n.id)}">连接质量 / 测试</button><button class="quiet" data-disable-node="${esc(n.id)}">${n.disabled?'启用':'禁用'}</button>`;
+  const actions=n=>`<button type="button" data-test-node="${esc(n.ref||n.id)}" ${testingNodes.has(n.ref||n.id)||n.disabled?'disabled':''}>测延迟</button><button class="quiet" data-traffic-node="${esc(n.ref||n.id)}">流量用量</button><button class="quiet" data-quality-node="${esc(n.ref||n.id)}">连接质量 / 测试</button><button class="quiet" data-disable-node="${esc(n.id)}">${n.disabled?'启用':'禁用'}</button>`;
   $('node-list').innerHTML=nodes.map(n=>`<tr><td>${select(n)}<strong>${esc(n.name)}</strong><br><small>${esc(state.sources.find(s=>s.slot===n.source)?.name||'来源 '+n.source)}</small></td><td>${nodeSummary(n)}</td><td>TCP ${esc(n.last_probe?.tcp_ips.join(', ')||'—')}<br>UDP ${esc(n.last_probe?.udp_ips.join(', ')||'—')}</td><td><input aria-label="节点优先级" type="number" min="0" max="10000" value="${n.priority}" data-priority="${esc(n.id)}"></td><td>${actions(n)}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">没有符合条件的节点</td></tr>';
-  $('node-cards').innerHTML=nodes.map(n=>`<article><h2>${select(n)}${esc(n.name)}</h2><p class="muted">${esc(state.sources.find(s=>s.slot===n.source)?.name||'来源 '+n.source)}</p><p>${nodeSummary(n)}</p><label>节点优先级<input type="number" aria-label="节点优先级" min="0" max="10000" value="${n.priority}" data-priority="${esc(n.id)}"></label><div class="actions">${actions(n)}</div></article>`).join('')||'<p class="empty">没有符合条件的节点</p>';
+  $('node-cards').innerHTML=nodes.map(n=>{const m=nodeLatency(n),ref=n.ref||n.id;return `<article class="simple-node ${selectedNodes.has(ref)?'is-selected':''}"><div class="node-main"><label class="node-name">${select(n)}${esc(n.name)}</label><button class="node-latency latency-${m.tone}" data-test-node="${esc(ref)}" ${testingNodes.has(ref)||n.disabled?'disabled':''} title="点击测试 HTTP 请求耗时，不切换节点" aria-label="测试 ${esc(n.name)} 的延迟">${esc(m.text)}</button></div><div class="node-caption"><small>${esc(state.sources.find(s=>s.slot===n.source)?.name||'来源 '+n.source)}${n.disabled?' · 已禁用':''}</small><small>${m.time?date(m.time)+(Date.now()/1000-m.time>180?' · 旧记录':''):'尚无记录'}</small></div><details><summary>详情与管理</summary><p>${esc(n.last_probe?.reason||'尚未完成出口验证')}</p><label>节点优先级<input type="number" aria-label="节点优先级" min="0" max="10000" value="${n.priority}" data-priority="${esc(n.id)}"></label><div class="actions">${actions(n)}</div></details></article>`;}).join('')||'<p class="empty">没有符合条件的节点</p>';
 }
 async function renderEvents() {
   const events = await api('/api/events');
@@ -255,6 +267,7 @@ document.addEventListener('click',guarded(async e=>{
   if(b.dataset.viewSource){sourceFilter=b.dataset.viewSource;$('node-filter').value='';$('us-only').checked=false;$('source-filter').value=sourceFilter;document.querySelector('[data-tab=nodes]').click();renderNodes();}
   if(b.dataset.trafficGroup)openTraffic({group:b.dataset.trafficGroup});
   if(b.dataset.trafficNode)openTraffic({node:b.dataset.trafficNode});
+  if(b.dataset.testNode)await runTests([b.dataset.testNode]);
   if(b.dataset.configure)openGroupConfiguration(b.dataset.configure);
   if(b.dataset.scope)openScope(b.dataset.scope);
   if(b.dataset.viewRecommendation){const id=b.dataset.viewRecommendation,g=state.groups.find(g=>g.id===id);openScope(id,g.last_evaluation.recommended);}
@@ -293,7 +306,7 @@ document.addEventListener('click',guarded(async e=>{
   if(b.dataset.sourceDelete && confirm('删除订阅？使用其节点的组将先暂停。')) await action('source_delete',{slot:Number(b.dataset.sourceDelete)});
   if(b.dataset.disableNode) {const n=state.nodes[b.dataset.disableNode]; await action('node_update',{node:n.id,disabled:!n.disabled});}
 }));
-document.addEventListener('change',guarded(async e=>{if(e.target.dataset.selectNode){if(e.target.checked)selectedNodes.add(e.target.dataset.selectNode);else selectedNodes.delete(e.target.dataset.selectNode);}if(e.target.dataset.priority) await action('node_update',{node:e.target.dataset.priority,priority:Number(e.target.value)});}));
+document.addEventListener('change',guarded(async e=>{if(e.target.dataset.selectNode){if(e.target.checked)selectedNodes.add(e.target.dataset.selectNode);else selectedNodes.delete(e.target.dataset.selectNode);renderNodes();}if(e.target.dataset.priority) await action('node_update',{node:e.target.dataset.priority,priority:Number(e.target.value)});}));
 $('settings-form').onsubmit=guarded(async e=>{e.preventDefault(); const values=Object.fromEntries(new FormData(e.target)); for(const k of ['tcp_check_urls','tcp_identity_urls','stun_servers']) values[k]=values[k].split('\n').map(s=>s.trim()).filter(Boolean); for(const k of ['check_interval','failure_seconds','health_grace','identity_ttl','probe_timeout']) values[k]=Number(values[k]); await action('settings',values);});
 $('alerts-form').onsubmit=guarded(async e=>{e.preventDefault(); const data={alert_enabled:e.target.elements.alert_enabled.checked}; if(e.target.elements.alert_url.value) data.alert_url=e.target.elements.alert_url.value; await action('settings',data); e.target.elements.alert_url.value='';});
 function download(value,name) {const link=document.createElement('a'); link.href=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'})); link.download=name; link.click(); setTimeout(()=>URL.revokeObjectURL(link.href),1000);}
@@ -458,9 +471,11 @@ async function runTests(refs,test='http',group){
   if([...operations.values()].some(o=>o.key===key&&o.running)){message('这项测试已在进行中');return;}
   if(refs.length>1&&!confirm(`将按顺序测试 ${refs.length} 个节点，只发送轻量请求。超时节点可能使等待时间较长。继续？`))return;
   const operation={key,title:test==='udp'?'手动 UDP 诊断':'独立连接检查（'+refs.length+' 个节点）',started:Date.now(),running:true,detail:'正在提交…',session:operationSession,diagnostic:true};
+  refs.forEach(ref=>testingNodes.set(ref,Date.now()/1000));renderNodes();
   operations.set(operation,operation);renderOperations();
   try{const {job}=await api('/api/tests',{nodes:refs,test,group});if(operation.session!==operationSession)return;operation.cancelJob=job;await waitForJob(job,operation);}
   catch(e){if(operation.session!==operationSession)return;operation.running=false;operation.detail='未能确认测试结果：'+e.message;renderOperations();}
+  finally{refs.forEach(ref=>testingNodes.delete(ref));if(state&&!$('dashboard').hidden)renderNodes();}
 }
 $('quality-close').onclick=closeQuality;
 $('quality-dialog').addEventListener('close',()=>{qualitySequence++;qualityContext=null;});

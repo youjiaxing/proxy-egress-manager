@@ -127,6 +127,8 @@ class Diagnostics:
                                 result={'samples':[{'target':target,'method':'http-get-headers','ok':ok,'ms':ms if ok else None}], 'ok':ok}
                     except asyncio.CancelledError:
                         raise
+                    except asyncio.TimeoutError:
+                        result={'samples':[], 'error':'timeout'}
                     except Exception:
                         result={'samples':[], 'error':'测试未完成；无法据此判断线路丢包或完整出口可用性'}
                     result.update(node_ref=ref, config=hashlib.sha256(json.dumps([snapshot['epoch'],snapshot['settings']],sort_keys=True).encode()).hexdigest()[:16],test=kind,name=snapshot['name'],time=time.time(),segment=snapshot['segment'])
