@@ -29,6 +29,7 @@ async function until(fn){for(let i=0;i<200;i++){if(fn())return;await pause();}th
  assert.ok(d.querySelector('[data-evaluate="1"]'));
  assert.ok(d.querySelector('[data-scope="1"]'));
  assert.equal(posts.length,0,'configuration entry must not probe or switch');
+ assert.match(d.getElementById('dialog-fields').textContent,/暂不可用时，修改范围会启动查找/);
  d.querySelector('[data-scope="1"]').click();assert.match(d.getElementById('dialog-title').textContent,/手动/);
  assert.equal(posts.length,0);assert.match(d.getElementById('scope-options').textContent,/未评估/);
  d.getElementById('dialog-cancel').click();
