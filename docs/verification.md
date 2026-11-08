@@ -215,3 +215,14 @@
 - 修正后本地98 passed（6.95秒），固定源码 `677f54bff74066795dbc8091b0e44deb584b97d7`，发布 https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.3.7 ，双架构/真实Compose流程 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42363484916 成功。固定镜像 `ghcr.io/youjiaxing/proxy-egress-manager:v0.3.7@sha256:dda0415c01baa8b71e3558315bb8a077a2b8a95e49f8063d9a4730be7ac8fe3a`，附件源码/摘要核对一致；仅重建应用、核心保持运行。备份 `/root/proxy-egress-manager-deployment-backups/20261107T102418Z-pre-v0.3.7`。
 - 线上HTTPS认证、新节点面板资源、质量/流量API、2订阅77节点与分组UID/范围/原节点/设置完整保留；两组授权有效且真实SOCKS出口匹配、独立。仅对组1当前节点做一次独立HTTP测试，返回83.3ms、current=true，结果已写入节点状态；前后分组节点/范围不变。未进行全订阅测速或重新优选。流量累计逐身份不倒退、起点一致、gap=false；质量历史1357→1360。完整按钮行为在隔离DOM/CI验证，未将线上API验收称为浏览器点击验收。
 - 外部验收 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42363811245 首次恰逢应用重建，首页200断言失败；服务恢复后原样重跑attempt2成功，DNS/TLS/认证及公网端口隔离通过，未修改验收标准。
+
+## v0.3.8 TCP 准入、UDP 参考与 Google 访问恢复
+
+- 用户确认 TCP 为硬性条件、UDP 仅观测，并明确授权实施和上线。保留全部 TCP 身份目标成功、TCP 美国归属与组间 TCP 出口独立；UDP 未响应、国家或地址变化不再参与暂停、换节点或冲突判断。UDP 转发仍保留。可选测量使用健康预算与身份有效期的余量，不能丢弃已完成 TCP 结果；质量记录增加策略分段，帮助和拒绝原因同步更新。
+- 回归先在旧实现上得到 6 failed / 2 passed，复现 UDP 导致换节点/拒绝候选等问题；随后本地固定核心完整 105 passed、8 组 DOM 检查通过。另以真实 SOCKS 增加身份有效期为 1 秒且 UDP 卡住的失败回归，再收紧可选测量预算并通过。独立审查未发现已确认发布阻塞；最终提交与 CI 状态由主代理核对，不宣称审查者独立重跑 CI 或 VPS。
+- 最终源码 `ea80d5bd4b64bf9218bcb98c02ac206187d06037`。原生双架构 CI https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42434514268 成功；Release https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.3.8 ，发布流程 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42434876432 再次完成双架构测试、构建与真实 Compose，成功。固定镜像 `ghcr.io/youjiaxing/proxy-egress-manager:v0.3.8@sha256:a80e48ce2b8cd5cf10a01c7bdfccba66fadcd2a9872f7a562f6962d1afd62096`，发布附件源码/摘要一致，VPS 匿名拉取成功，镜像 revision 匹配。
+- 应用更新前，一致配置备份及独立 traffic/quality SQLite 快照保存在 `/root/proxy-egress-manager-deployment-backups/20261108T013918Z-pre-v0.3.8`。无格式迁移，仅停止并重建应用，两个既有 Mihomo 核心容器身份和启动时间不变。新应用 healthy；HTTPS 认证、新 TCP/UDP 文案、质量和流量 API、退出后 401 通过。更新时 2 来源、77 节点、来源/分组 UID、设置、范围与暂停/固定偏好保留。流量 208 行逐身份不倒退、统计起点相同、gap=false；质量历史 5376→5378。
+- 现场基线：组 1 的三条 Google Fonts 完整 GET 均超时，组 2 均 200。组 1 原清单 3 个引用仅 1 个仍有效。临时独立 Mihomo（无宿主端口、128 MiB / 0.25 CPU）先测旧池，再扩大至已启用的美国标注候选；候选总数 32，但实际只测 4 个就找到 3 个通过三条完整字体 GET、TCP 美国身份且不与组 2 冲突的节点，然后停止。临时静态配置最初因重复代理名启动失败，按配置名去重后才开始候选探测；不修改业务核心来做这些测试。临时容器、配置和脚本已清理，脱敏候选结果留在本次备份目录。
+- 通过现有认证管理 API 将组 1 清单替换为上述 3 个引用，并明确确认断开旧连接；正式检查遇到“圣何塞04”的 TCP 身份目标暂未返回时跳过，随后“圣何塞03”候选与业务入口复验通过，操作持久化结果 `saved_available`。组 2 当前“圣何塞01”节点及范围未改。最终 TCP 地址分别为 `104.251.122.87`、`207.32.216.109`，两组授权有效；地址只是当时观测，不保证永久静态。
+- 实际网关 SOCKS5 1081/1082 各对用户报错的 Google Sans Flex、Inter/Inter Tight、Google Sans Text 三条 Fonts URL 连续复测两轮：12 次完整响应均 HTTP 200，CSS 内容包含 font-face，耗时 55.1–164.8 ms；两组实际 TCP 身份请求也匹配管理器记录。未修改现有业务容器，不将这次代理入口验收称为调用方服务自身的完整端到端验收。Fonts 检查只用于本次恢复，没有加入周期任务，也未给空闲节点新增周期探测。
+- 外部 DNS、可信 TLS、HTTP 跳转、匿名接口拒绝与公网端口隔离验收 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42435226474 成功。
