@@ -226,3 +226,13 @@
 - 通过现有认证管理 API 将组 1 清单替换为上述 3 个引用，并明确确认断开旧连接；正式检查遇到“圣何塞04”的 TCP 身份目标暂未返回时跳过，随后“圣何塞03”候选与业务入口复验通过，操作持久化结果 `saved_available`。组 2 当前“圣何塞01”节点及范围未改。最终 TCP 地址分别为 `104.251.122.87`、`207.32.216.109`，两组授权有效；地址只是当时观测，不保证永久静态。
 - 实际网关 SOCKS5 1081/1082 各对用户报错的 Google Sans Flex、Inter/Inter Tight、Google Sans Text 三条 Fonts URL 连续复测两轮：12 次完整响应均 HTTP 200，CSS 内容包含 font-face，耗时 55.1–164.8 ms；两组实际 TCP 身份请求也匹配管理器记录。未修改现有业务容器，不将这次代理入口验收称为调用方服务自身的完整端到端验收。Fonts 检查只用于本次恢复，没有加入周期任务，也未给空闲节点新增周期探测。
 - 外部 DNS、可信 TLS、HTTP 跳转、匿名接口拒绝与公网端口隔离验收 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42435226474 成功。
+
+## v0.3.9 省流检测档上线
+
+- 用户授权采用推荐档：TCP 每 300 秒、UDP 每 1800 秒，匹配调度健康宽限 420 秒和 TCP 身份有效期 900 秒；持续 TCP 故障阈值仍 180 秒，请求超时仍 8 秒。TCP 美国身份及组间 TCP 出口独立规则不变。新字段只补 UDP 缺省值，不自动覆盖旧部署的 TCP 设置；现场通过认证设置 API 明确应用四项参数。
+- 独立 UDP 调度按分组 UID、节点 `node_ref`、STUN 目标、国家 URL 和间隔计时；候选仅核验 TCP，新业务节点复验时尝试 UDP。跳过的轮次不发 STUN、不生成假样本，保留绑定实际来源/节点身份的 UDP 上次结果和时间。删除/恢复清理运行计时，旧备份缺字段可恢复为 1800 秒。设置页新增独立频率及省流建议，卡片/表格展示 UDP 上次观测时间。
+- 本地完整固定 Mihomo 回归 107 passed（8.06 秒），八组 UI DOM 和发布边界检查通过；覆盖跨 1800 秒的独立频率、TCP 等待期间授权有效、节点/来源 UID/间隔改变、真实 SOCKS 下 TCP-only 不调用 STUN，以及旧格式备份的实际离线恢复。独立审查最终源码 `15f48837677e210ce6b52eeefaeee8bb9d88efab` 未发现阻塞；线上与 CI 由主代理验证，不宣称审查者独立执行。
+- 双架构 CI https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42437938606 成功；Release https://github.com/youjiaxing/proxy-egress-manager/releases/tag/v0.3.9 ，发布流程 https://github.com/youjiaxing/proxy-egress-manager/actions/runs/42438204963 再次完成双架构测试、构建及真实 Compose，成功。固定镜像 `ghcr.io/youjiaxing/proxy-egress-manager:v0.3.9@sha256:b6f862b9525458f596bde54fb200eddf47eaafd1a15755f9e6c0e3e6cd3a5ab6`，附件源码/摘要和 VPS 镜像 revision 一致，匿名拉取成功。
+- 升级备份 `/root/proxy-egress-manager-deployment-backups/20261108T022543Z-pre-v0.3.9` 含旧环境、Compose、一致配置及独立流量/质量 SQLite 快照。只重建应用，两个 Mihomo 核心容器身份与启动时间不变，应用 healthy。HTTPS 认证、新频率/时间文案与质量/流量 API、退出后拒绝访问通过；2 来源、77 节点、分组 UID/节点池/固定暂停偏好保留，流量 220 行逐身份不倒退、起点相同、gap=false；质量记录 5592→5594。
+- 通过认证设置 API 应用 300/1800/420/900，比较确认其他设置、两个业务节点、节点池和分组属性均不变。真实等待约 361 秒，仅每 60 秒只读状态；过渡期旧等待结束后，观测到组 1/2 的两次正式 TCP 验证间隔分别 300.42/300.41 秒。整个观察期租约均有效、UDP 观测时间不变、最新记录 `udp_checked=false`。30 分钟 UDP 到期的完整跨度由本地可控时钟测试覆盖，未宣称线上等待了 30 分钟。
+- 最后各从实际 SOCKS 1081/1082 发一次完整 Google Fonts GET，均 HTTP 200、响应包含 font-face，耗时 158.1/156.2 ms。仅读取全分页账本，在约 301 秒稳定观察窗口，日常检测合计增加 27368 字节；按这一短样本外推约 7.9 MB/天、236 MB/30 天，不含业务/候选/手动/直连请求及网络协议封装，不等同订阅计费或长期保证。没有全节点扫描，也没有新增周期目标；验收脚本已清理。
