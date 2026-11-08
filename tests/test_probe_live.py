@@ -121,6 +121,8 @@ async def test_real_tcp_and_udp_observations_are_separate_and_all_tcp_targets_re
         monkeypatch.setattr(probe, 'stun_query', hung_udp)
         result = await asyncio.wait_for(Prober().observe(upstream, {**settings, 'health_grace': 1}), 1.5)
         assert result.us and not result.udp_ok
+        result = await asyncio.wait_for(Prober().observe(upstream, {**settings, 'identity_ttl': 1}), .9)
+        assert result.us and not result.udp_ok
         monkeypatch.setattr(probe, 'stun_query', no_udp)
         settings['tcp_identity_urls'].append(str(http.make_url('/missing')))
         result = await Prober().observe(upstream, settings)

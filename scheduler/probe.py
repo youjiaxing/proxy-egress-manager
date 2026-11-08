@@ -254,7 +254,7 @@ class Prober:
             # Optional measurements cannot exhaust the controller's outer budget and
             # discard a completed TCP identity. TCP metadata gets priority, including
             # when the public country service rate-limits requests.
-            remaining = budget - (time.monotonic() - started) - 0.25
+            remaining = min(budget, settings['identity_ttl'] * 0.75) - (time.monotonic() - started) - 0.25
             if remaining > 0:
                 try:
                     async with asyncio.timeout(remaining):
