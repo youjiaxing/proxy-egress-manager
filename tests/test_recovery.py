@@ -36,12 +36,18 @@ def test_offline_backup_restore_and_live_lock_rejection(tmp_path):
     store.close()
     subprocess.run(script+['backup',str(backup)],env=env,check=True,capture_output=True)
     assert backup.stat().st_mode & 0o777==0o600
+    # A backup from before the independent UDP interval remains valid.
+    legacy = json.loads(backup.read_text())
+    legacy['state']['settings'].pop('udp_check_interval')
+    validate_backup(legacy, 32, 16)
+    backup.write_text(json.dumps(legacy))
     store=Store(tmp_path)
     store.state['groups'][0]['name']='after upgrade'
     store.save(); store.close()
     subprocess.run(script+['restore',str(backup)],env=env,check=True,capture_output=True)
     restored=Store(tmp_path)
     assert restored.state['groups'][0]['name']=='before upgrade'
+    assert restored.state['settings']['udp_check_interval'] == 1800
     assert restored.state['quality_epoch'] != json.loads(backup.read_text())['state']['quality_epoch']
     from scheduler.history import History
     assert History(tmp_path).query('system',24)['restores']

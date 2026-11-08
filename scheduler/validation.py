@@ -2,12 +2,12 @@ import math
 import re
 from urllib.parse import parse_qs, urlparse
 
-TIME_KEYS = ("check_interval", "failure_seconds", "health_grace", "identity_ttl", "probe_timeout")
+TIME_KEYS = ("check_interval", "udp_check_interval", "failure_seconds", "health_grace", "identity_ttl", "probe_timeout")
 
 
 def validate_settings(settings):
     for key in TIME_KEYS:
-        value = settings[key]
+        value = settings.get(key, 1800) if key == 'udp_check_interval' else settings[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 1 <= value <= 86400:
             raise ValueError("时间参数范围为 1–86400 秒")
     for key in ("tcp_identity_urls", "tcp_check_urls", "stun_servers"):

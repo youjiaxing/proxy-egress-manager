@@ -371,6 +371,7 @@ class Management:
                 for group in restored["groups"]:
                     await self.controller.gateway.listen(group["id"], group["port"])
                 self.controller.identities.clear()
+                self.controller.udp_schedule.clear()
                 restored["quality_epoch"] = identity()
                 self.controller.store.restore(restored, backup.get("events", []))
                 if self.controller.traffic:

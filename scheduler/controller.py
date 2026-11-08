@@ -25,6 +25,7 @@ class Controller:
         self.tasks = []
         self.running = False
         self.candidate_cursor = {}
+        self.udp_schedule = {}  # One bounded entry per group UID; never restored as fresh telemetry.
         self.selection_progress = {}
         self.selection_cancellations = {}
         self.core_error = None
@@ -146,16 +147,29 @@ class Controller:
                 await self.core.select(int(group["id"]), node)
             upstream = self.core.host, 20000 + int(group["id"])
         observed_at = self.clock()
+        settings = dict(self.state['settings'])
+        udp_key = (node_ref(self.state, self.state['nodes'][node]), tuple(settings['stun_servers']),
+                   settings['country_url'], settings['udp_check_interval'])
+        previous_udp = self.udp_schedule.get(group['uid'])
+        udp_due = not candidate and (previous_udp is None or previous_udp[0] != udp_key or observed_at >= previous_udp[1])
+        if udp_due:
+            self.udp_schedule[group['uid']] = (udp_key, observed_at + settings['udp_check_interval'])
+        else:
+            settings['stun_servers'] = []
         try:
             budget = max(1, min(45, self.state["settings"]["health_grace"] * 0.75))
             from scheduler.traffic import metered_probe
             context = self.traffic.context(self.state,group,self.state['nodes'][node],'candidate' if candidate else 'running') if self.traffic else None
             async def measured():
                 async with metered_probe(upstream,self.traffic,context) as route:
-                    return await self.prober.observe(route,self.state['settings'])
+                    return await self.prober.observe(route,settings)
             result = await asyncio.wait_for(measured(), budget)
         except asyncio.TimeoutError:
-            result = Observation(reason="探测总超时，身份未刷新")
+            result = Observation(reason="探测总超时，身份未刷新", udp_checked=False)
+        # Test doubles and timeout results must follow the same explicit measurement schedule.
+        if not udp_due:
+            result.udp_checked = False
+            result.udp_ok, result.udp_ips = False, set()
         result.observed_at = observed_at
         if not candidate:
             observed = result.tcp_ips
@@ -192,7 +206,13 @@ class Controller:
         if self.clock() >= deadline:
             await self.pause(group, "观测已超过身份有效期，等待下一次重验")
             return False
-        group.update(node=node, tcp_ips=sorted(observation.tcp_ips), udp_ips=sorted(observation.udp_ips), udp_reason=observation.udp_reason,
+        udp_ref = node_ref(self.state, self.state['nodes'][node])
+        if observation.udp_checked:
+            group.update(udp_ips=sorted(observation.udp_ips), udp_reason=observation.udp_reason,
+                         udp_observed_at=self.wall(), udp_node_ref=udp_ref)
+        elif group.get('udp_node_ref') != udp_ref:
+            group.update(udp_ips=[], udp_reason='此节点尚未进行 UDP 观测', udp_observed_at=None, udp_node_ref=udp_ref)
+        group.update(node=node, tcp_ips=sorted(observation.tcp_ips),
                      verified_at=self.wall() - (self.clock() - observed_at), status="active", reason="TCP 美国出口已验证", failure_since=None, retry_step=0, next_retry_at=0)
         if changed or group["since"] is None:
             group["since"] = self.wall()
@@ -540,7 +560,7 @@ class Controller:
                 selection.update(current=None,stage='已结束',finished=self.wall())
                 if evaluating and outcome=='not_applied':
                     qualified=[a for a in selection['attempts'] if a['eligible']]
-                    qualified.sort(key=lambda a:(a['http_failed'],a['http_ms'] if a['http_ms'] is not None else float('inf'),a['udp_ms'] if a['udp_ms'] is not None else float('inf')))
+                    qualified.sort(key=lambda a:(a['http_failed'],a['http_ms'] if a['http_ms'] is not None else float('inf')))
                     selection['recommended']=[a['node_ref'] for a in qualified if a['http_ms'] is not None and a['http_failed']==0][:3]
                     selection['qualified']=len(qualified)
                     outcome='evaluated'
@@ -718,6 +738,7 @@ class Controller:
                 elif kind == "group_delete":
                     await self.gateway.remove(group["id"])
                     self.state["groups"].remove(group)
+                    self.udp_schedule.pop(group['uid'], None)
                 elif kind == "group_check":
                     if not group['paused'] and not group['pinned'] and group.get('next_retry_at'):
                         await self.find_backup(group, manual=True)
@@ -725,7 +746,7 @@ class Controller:
                     raise ValueError("未知分组操作")
             elif kind == "settings":
                 updated = copy.deepcopy(self.state["settings"])
-                for key in ("check_interval", "failure_seconds", "health_grace", "identity_ttl", "probe_timeout",
+                for key in ("check_interval", "udp_check_interval", "failure_seconds", "health_grace", "identity_ttl", "probe_timeout",
                             "tcp_identity_urls", "tcp_check_urls", "stun_servers", "country_url", "alert_url", "alert_enabled"):
                     if key in data:
                         updated[key] = data[key]

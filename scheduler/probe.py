@@ -105,6 +105,7 @@ class Observation:
     country_errors: dict = field(default_factory=dict)
     identity_errors: list = field(default_factory=list)
     udp_identity_complete: bool = True
+    udp_checked: bool = True
 
     @property
     def complete(self):
@@ -118,6 +119,8 @@ class Observation:
 
     @property
     def udp_reason(self):
+        if not self.udp_checked:
+            return "本轮未安排 UDP 观测；仅按 TCP 判断是否可用"
         if not self.udp_ok:
             return "UDP 未测通或测量超时；不影响 TCP 使用"
         if not self.udp_identity_complete or any(ip not in self.countries for ip in self.udp_ips):
@@ -131,6 +134,7 @@ class Observation:
                 "udp_ips": sorted(self.udp_ips), "countries": self.countries,
                 "complete": self.complete, "us": self.us, "reason": self.reason, "country_errors": self.country_errors, "identity_errors": self.identity_errors,
                 "udp_reason": self.udp_reason, "admission_policy": "tcp-us-independent-v1",
+                "udp_checked": self.udp_checked,
                 "coverage": "仅配置的 HTTPS/STUN 目标所见出口；其他目的地和地址族未知", "samples": self.samples}
 
 
@@ -176,7 +180,7 @@ class Prober:
         started = time.monotonic()
         budget = max(1, min(45, settings['health_grace'] * 0.75))
         timeout = settings["probe_timeout"]
-        result = Observation(udp_identity_complete=False)
+        result = Observation(udp_identity_complete=False, udp_checked=False)
         tcp_errors = []
         connector = ProxyConnector.from_url("socks5://%s:%s" % upstream, rdns=True)
         async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=timeout)) as proxy:
@@ -256,6 +260,7 @@ class Prober:
             # when the public country service rate-limits requests.
             remaining = min(budget, settings['identity_ttl'] * 0.75) - (time.monotonic() - started) - 0.25
             if remaining > 0:
+                result.udp_checked = bool(settings['stun_servers'])
                 try:
                     async with asyncio.timeout(remaining):
                         udp_ips = await asyncio.gather(*(udp_identity(u) for u in settings['stun_servers']))

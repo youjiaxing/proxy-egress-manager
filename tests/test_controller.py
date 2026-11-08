@@ -70,6 +70,7 @@ async def test_udp_observations_never_revoke_tcp_lease(controller, udp_ips, udp_
     since = c.group('1')['since']
     countries = {'8.8.8.8': 'US', **{ip: udp_country for ip in udp_ips}}
     c.prober.results['a'] = Observation(True, bool(udp_ips), {'8.8.8.8'}, udp_ips, countries)
+    c.udp_schedule.clear()  # Force a fresh optional observation for this change.
     c.group('1')['failure_since'] = c.clock() - 500
     await c.tick()
     assert c.group('1')['node'] == 'a' and c.group('1')['status'] == 'active'
@@ -78,6 +79,52 @@ async def test_udp_observations_never_revoke_tcp_lease(controller, udp_ips, udp_
     assert c.group('1')['since'] == since
     assert c.group('1')['failure_since'] is None
     assert c.group('1')['udp_ips'] == sorted(udp_ips)
+
+
+@pytest.mark.asyncio
+async def test_independent_udp_schedule_retains_last_measurement_without_fresh_samples(controller):
+    c = controller
+    calls = []
+    observe = c.prober.observe
+    async def record(upstream, settings):
+        calls.append((upstream[1], bool(settings['stun_servers'])))
+        return await observe(upstream, settings)
+    c.prober.observe = record
+    c.state['settings'].update(check_interval=300, health_grace=420, identity_ttl=900, udp_check_interval=1800)
+    await c.tick()
+    generation = c.gateway.leases['1'].generation
+    udp_time = c.group('1')['udp_observed_at']
+    for _ in range(5):
+        c.now[0] += 300
+        await c.tick()
+        assert c.gateway.allowed('1', generation)
+        assert c.group('1')['udp_ips'] == ['8.8.8.8']
+        assert c.group('1')['udp_observed_at'] == udp_time
+        assert not c.state['nodes']['a']['last_probe']['udp_checked']
+        assert not c.state['nodes']['a']['last_probe']['udp_ips']
+    assert sum(due for _, due in calls) == 2  # One per group, not every TCP round.
+    c.now[0] += 300
+    await c.tick()
+    assert sum(due for _, due in calls) == 4
+    # Candidate tests use TCP only. Switching to a new node gets fresh UDP telemetry.
+    await c.observe(c.group('1'), 'c', candidate=True)
+    assert calls[-1] == (20000, False)
+    result = await c.action('group_switch', {'group':'1', 'node':'c'})
+    assert result['outcome'] == 'applied'
+    assert calls[-1] == (20001, True)
+
+
+@pytest.mark.asyncio
+async def test_udp_frequency_change_and_source_generation_get_fresh_measurements(controller):
+    c = controller
+    await c.tick()
+    c.now[0] += 30
+    result = await c.observe(c.group('1'), 'a')
+    assert not result.udp_checked
+    c.state['settings']['udp_check_interval'] = 3600
+    assert (await c.observe(c.group('1'), 'a')).udp_checked
+    c.state['sources'][0]['uid'] = identity()
+    assert (await c.observe(c.group('1'), 'a')).udp_checked
 
 
 @pytest.mark.asyncio
@@ -267,6 +314,10 @@ async def test_invalid_settings_do_not_partially_mutate(controller):
     with pytest.raises(ValueError):
         await c.action('settings',{'check_interval':5,'identity_ttl':-1})
     assert c.state['settings']==previous
+    for invalid in (0, -1, True, float('nan'), 86401):
+        with pytest.raises(ValueError):
+            await c.action('settings', {'udp_check_interval':invalid})
+        assert c.state['settings']==previous
 
 
 @pytest.mark.asyncio

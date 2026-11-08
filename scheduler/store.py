@@ -92,6 +92,7 @@ def prepare_storage(directory):
     return current
 
 DEFAULT_SETTINGS = {
+    "udp_check_interval": 1800,
     "check_interval": 30, "failure_seconds": 180, "health_grace": 60,
     "identity_ttl": 180, "probe_timeout": 8, "priority_country": "US",
     "tcp_identity_urls": ["https://api.ipify.org?format=json"],
@@ -162,6 +163,7 @@ class Store:
         return {"format": 2, "created_at": time.time(), "state": json.loads(row[0]), "events": events}
 
     def restore(self, state, events):
+        state['settings'].setdefault('udp_check_interval', DEFAULT_SETTINGS['udp_check_interval'])
         normalize(state)
         validate_v2(state)
         state["revision"] += 1

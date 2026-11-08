@@ -104,6 +104,15 @@ async def test_real_tcp_and_udp_observations_are_separate_and_all_tcp_targets_re
         assert result.tcp_ips=={'8.8.8.8'}
         assert result.udp_ips=={'8.8.4.4'}
         assert result.tcp_ok and result.udp_ok
+        from scheduler import probe
+        real_stun = probe.stun_query
+        async def forbidden_udp(*args):
+            raise AssertionError('TCP-only round must not call STUN')
+        monkeypatch.setattr(probe, 'stun_query', forbidden_udp)
+        result = await Prober().observe(upstream, {**settings, 'stun_servers': []})
+        assert result.us and not result.udp_checked and not result.udp_ips
+        assert not any(s['method']=='stun-with-retry' for s in result.samples)
+        monkeypatch.setattr(probe, 'stun_query', real_stun)
         # Optional UDP failure must neither fail TCP admission nor trigger failure controls.
         from scheduler import probe
         real_stun = probe.stun_query
