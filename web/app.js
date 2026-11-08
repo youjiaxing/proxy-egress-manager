@@ -118,12 +118,14 @@ function showHelp(target) {
 }
 function groupReason(reason) {
   const meanings = {
-    '等待双协议验证':'正在等待 TCP 和 UDP 连接验证，通过后才能使用。',
+    '等待双协议验证':'正在等待 TCP 出口验证；UDP 仅供参考。',
+    '等待 TCP 验证':'正在等待 TCP 出口验证，通过后才能使用；UDP 仅供参考。',
     '启动后等待重验':'服务刚启动，正在重新验证节点。',
     '手动暂停':'你已暂停此分组，点击“启用分组”后才会继续验证和使用。',
     '节点不可用或订阅已停用':'尚无可用的当前节点，或其订阅已停用；系统会按设置寻找合格节点。',
     '没有已验证的独立美国备用出口，保留占用等待恢复':'本轮暂未找到通过全部检查、且与其他组出口不重复的美国节点；该组目前不能使用，系统会继续检查。',
-    '双协议美国出口已验证':'TCP 和 UDP 均已验证为美国出口，且与其他组已记录的出口不重复。',
+    '双协议美国出口已验证':'这是旧版验证记录，当前使用情况以本次 TCP 验证与授权为准。',
+    'TCP 美国出口已验证':'TCP 已验证为美国出口，且与其他组已记录的 TCP 出口不重复。UDP 仅供参考。',
     '钉住节点不合格，暂停且不切换':'当前节点未通过检查；由于你固定了节点，该组停止转发，不自动更换。',
     '出口身份到期；继续独立连通探测':'上次出口验证已过期，正在重新检查；通过前暂停使用。',
     '出口身份到期':'上次出口验证已过期，通过重新检查前暂停使用。',
@@ -174,8 +176,8 @@ function renderGroups() {
     const buttons = primary + `<details class="group-more" data-more-group="${esc(g.uid||g.id)}"><summary>更多操作</summary><div class="actions">${secondary}</div></details>`;
     const scopeText = describeScope(g);
     const retryText = g.next_retry_at>Date.now()/1000 ? `下次恢复检查：${date(g.next_retry_at)}，等待期间不重复探测` : '';
-    if(layout==='table') return `<tr><td><strong>${esc(g.name)}</strong><br><span class="badge ${g.lease_valid?'active':'paused'}">${status}</span><br>${esc(n?.name||'无合格节点')}<br><small>${esc(g.endpoint)}</small></td><td>${esc(scopeText)}<br><small>${g.candidate_count??0} 个有效候选</small></td><td>TCP ${esc(g.tcp_ips.join(', ')||'尚未验证')}<br>UDP ${esc(g.udp_ips.join(', ')||'尚未验证')}<p>${esc(groupReason(g.reason))}</p><small>${esc(retryText)}</small>${groupFeedback(g)}</td><td><div class="table-actions">${buttons}</div></td></tr>`;
-    return `<article><div class="section-title"><h2>${esc(g.name)}</h2><span class="badge ${g.lease_valid?'active':'paused'}">${status}</span></div><p class="endpoint-label">业务中填写的代理地址</p><div class="endpoint">socks5://${esc(g.endpoint)}</div><dl class="details"><dt>当前节点 / 订阅</dt><dd>${esc(n?.name || '尚未找到合格节点')} / ${esc(source?.name || '—')}</dd><dt>出口地址（TCP）</dt><dd>${esc(g.tcp_ips.join(', ')||'尚未验证')}</dd><dt>出口地址（UDP）</dt><dd>${esc(g.udp_ips.join(', ')||'尚未验证')}</dd><dt>上次验证时间</dt><dd>${date(g.verified_at)}</dd><dt>当前选择已保持</dt><dd>${g.since?Math.floor((Date.now()/1000-g.since)/60)+' 分钟':'—'}</dd><dt>允许使用范围</dt><dd>${esc(scopeText)} · ${g.candidate_count??0} 个有效候选</dd><dt>自动更换节点</dt><dd>${g.pinned ? (g.pin_until?'已关闭，至 '+date(g.pin_until):'已关闭，需手动允许'):'已允许，正常时保持当前节点'}</dd></dl>${groupFeedback(g)}<div class="actions">${buttons}</div><p class="reason">当前情况：${esc(groupReason(g.reason))}<br>${esc(retryText)}</p></article>`;
+    if(layout==='table') return `<tr><td><strong>${esc(g.name)}</strong><br><span class="badge ${g.lease_valid?'active':'paused'}">${status}</span><br>${esc(n?.name||'无合格节点')}<br><small>${esc(g.endpoint)}</small></td><td>${esc(scopeText)}<br><small>${g.candidate_count??0} 个有效候选</small></td><td>TCP ${esc(g.tcp_ips.join(', ')||'尚未验证')}<br>UDP（参考）${esc(g.udp_ips.join(', ')||'未测通或尚未测量')}<br><small>${esc(g.udp_reason||'仅供参考，不影响 TCP 使用')}</small><p>${esc(groupReason(g.reason))}</p><small>${esc(retryText)}</small>${groupFeedback(g)}</td><td><div class="table-actions">${buttons}</div></td></tr>`;
+    return `<article><div class="section-title"><h2>${esc(g.name)}</h2><span class="badge ${g.lease_valid?'active':'paused'}">${status}</span></div><p class="endpoint-label">业务中填写的代理地址</p><div class="endpoint">socks5://${esc(g.endpoint)}</div><dl class="details"><dt>当前节点 / 订阅</dt><dd>${esc(n?.name || '尚未找到合格节点')} / ${esc(source?.name || '—')}</dd><dt>TCP 出口（使用条件）</dt><dd>${esc(g.tcp_ips.join(', ')||'尚未验证')}</dd><dt>UDP 出口（参考）</dt><dd>${esc(g.udp_ips.join(', ')||'未测通或尚未测量')}<br><small>${esc(g.udp_reason||'仅供参考，不影响 TCP 使用')}</small></dd><dt>上次验证时间</dt><dd>${date(g.verified_at)}</dd><dt>当前选择已保持</dt><dd>${g.since?Math.floor((Date.now()/1000-g.since)/60)+' 分钟':'—'}</dd><dt>允许使用范围</dt><dd>${esc(scopeText)} · ${g.candidate_count??0} 个有效候选</dd><dt>自动更换节点</dt><dd>${g.pinned ? (g.pin_until?'已关闭，至 '+date(g.pin_until):'已关闭，需手动允许'):'已允许，正常时保持当前节点'}</dd></dl>${groupFeedback(g)}<div class="actions">${buttons}</div><p class="reason">当前情况：${esc(groupReason(g.reason))}<br>${esc(retryText)}</p></article>`;
   }).join('') || '<p class="empty">尚无分组，创建后会验证可用节点。</p>';
   // Unchanged polling results should not interrupt reading a tooltip or keyboard navigation.
   if(markup===renderGroups.previous) return;
@@ -222,7 +224,7 @@ function renderNodes() {
   $('node-table').hidden=layout==='cards';$('node-cards').hidden=layout!=='cards';
   const select=n=>`<input class="node-select" type="checkbox" data-select-node="${esc(n.ref||n.id)}" aria-label="选择 ${esc(n.name)}" ${selectedNodes.has(n.ref||n.id)?'checked':''}>`;
   const actions=n=>`<button type="button" data-test-node="${esc(n.ref||n.id)}" ${testingNodes.has(n.ref||n.id)||n.disabled?'disabled':''}>测延迟</button><button class="quiet" data-traffic-node="${esc(n.ref||n.id)}">流量用量</button><button class="quiet" data-quality-node="${esc(n.ref||n.id)}">连接质量 / 测试</button><button class="quiet" data-disable-node="${esc(n.id)}">${n.disabled?'启用':'禁用'}</button>`;
-  $('node-list').innerHTML=nodes.map(n=>`<tr><td>${select(n)}<strong>${esc(n.name)}</strong><br><small>${esc(state.sources.find(s=>s.slot===n.source)?.name||'来源 '+n.source)}</small></td><td>${nodeSummary(n)}</td><td>TCP ${esc(n.last_probe?.tcp_ips.join(', ')||'—')}<br>UDP ${esc(n.last_probe?.udp_ips.join(', ')||'—')}</td><td><input aria-label="节点优先级" type="number" min="0" max="10000" value="${n.priority}" data-priority="${esc(n.id)}"></td><td>${actions(n)}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">没有符合条件的节点</td></tr>';
+  $('node-list').innerHTML=nodes.map(n=>`<tr><td>${select(n)}<strong>${esc(n.name)}</strong><br><small>${esc(state.sources.find(s=>s.slot===n.source)?.name||'来源 '+n.source)}</small></td><td>${nodeSummary(n)}</td><td>TCP ${esc(n.last_probe?.tcp_ips.join(', ')||'—')}<br>UDP（参考）${esc(n.last_probe?.udp_ips.join(', ')||'未测通或尚未测量')}</td><td><input aria-label="节点优先级" type="number" min="0" max="10000" value="${n.priority}" data-priority="${esc(n.id)}"></td><td>${actions(n)}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">没有符合条件的节点</td></tr>';
   const expandedNodes=new Set([...$('node-cards').querySelectorAll('[data-node-detail][open]')].map(el=>el.dataset.nodeDetail));
   $('node-cards').innerHTML=nodes.map(n=>{const m=nodeLatency(n),ref=n.ref||n.id;return `<article class="simple-node ${selectedNodes.has(ref)?'is-selected':''}"><div class="node-main"><label class="node-name">${select(n)}${esc(n.name)}</label><button class="node-latency latency-${m.tone}" data-test-node="${esc(ref)}" ${testingNodes.has(ref)||n.disabled?'disabled':''} title="点击测试 HTTP 请求耗时，不切换节点" aria-label="测试 ${esc(n.name)} 的延迟">${esc(m.text)}</button></div><div class="node-caption"><small>${esc(state.sources.find(s=>s.slot===n.source)?.name||'来源 '+n.source)}${n.disabled?' · 已禁用':''}</small><small>${m.time?date(m.time)+(Date.now()/1000-m.time>180?' · 旧记录':''):'尚无记录'}</small></div><details data-node-detail="${esc(ref)}" ${expandedNodes.has(ref)?'open':''}><summary>详情与管理</summary><p>${esc(n.last_probe?.reason||'尚未完成出口验证')}</p><label>节点优先级<input type="number" aria-label="节点优先级" min="0" max="10000" value="${n.priority}" data-priority="${esc(n.id)}"></label><div class="actions">${actions(n)}</div></details></article>`;}).join('')||'<p class="empty">没有符合条件的节点</p>';
 }
@@ -379,7 +381,7 @@ function poolNode(g,n){
   const newer=p?.time>(evaluation?.time||0),samples=p?.samples||[];
   const ms=newer||!evaluation?Math.max(...samples.filter(s=>s.method==='http-get-headers'&&s.ok&&s.ms!=null).map(s=>s.ms),-1):evaluation.http_ms;
   const enabled=!n.disabled&&state.sources.some(s=>s.slot===n.source&&s.enabled);
-  const conflict=state.groups.some(other=>other.uid!==g.uid&&[...(other.tcp_ips||[]),...(other.udp_ips||[])].some(ip=>[...(p?.tcp_ips||[]),...(p?.udp_ips||[])].includes(ip)));
+  const conflict=state.groups.some(other=>other.uid!==g.uid&&(other.tcp_ips||[]).some(ip=>(p?.tcp_ips||[]).includes(ip)));
   return {n,evaluation,ms:ms>=0?ms:null,qualified:enabled&&!conflict&&(newer||!evaluation?!!p?.us:!!evaluation.eligible),
     reason:!enabled?'节点或订阅已停用':conflict?'出口与其他分组重复':newer||!evaluation?p?.reason||'未评估':evaluation.reason,time:newer||!evaluation?p?.time:evaluation.time};
 }

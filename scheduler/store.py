@@ -104,7 +104,7 @@ DEFAULT_SETTINGS = {
 def new_group(slot, name=None):
     return {"id": str(slot), "name": name or "出口组 %s" % slot, "port": 1080 + slot,
             "node": None, "paused": False, "pinned": False, "pin_until": None,
-            "status": "paused", "reason": "等待双协议验证", "tcp_ips": [], "udp_ips": [],
+            "status": "paused", "reason": "等待 TCP 验证", "tcp_ips": [], "udp_ips": [],
             "verified_at": None, "since": None, "failure_since": None, "uid": identity(), "scope": {"mode":"all", "ids":[]}, "retry_step":0, "next_retry_at":0}
 
 

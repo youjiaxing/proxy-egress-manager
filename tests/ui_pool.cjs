@@ -19,8 +19,14 @@ async function until(fn){for(let i=0;i<200;i++){if(fn())return;await pause();}th
   return {ok:true,json:async()=>path==='/api/state'?state:{csrf:'t'}};
  };
  const timer=w.setTimeout.bind(w);w.setTimeout=(fn,ms)=>timer(fn,ms===1000?5:ms);
- w.eval(fs.readFileSync('web/app.js','utf8')+'\nwindow.refreshForTest=refresh;');
+ w.eval(fs.readFileSync('web/app.js','utf8')+'\nwindow.refreshForTest=refresh;window.poolNodeForTest=poolNode;');
  await until(()=>d.querySelector('[data-configure="1"]'));
+ state.groups.push({uid:'g2',tcp_ips:['1.1.1.1'],udp_ips:['9.9.9.9']});
+ nodes.c.last_probe={us:true,tcp_ips:['9.9.9.9'],udp_ips:['1.1.1.1'],time:300};
+ assert.equal(w.poolNodeForTest(g,nodes.c).qualified,true,'UDP cross-protocol overlap is reference data only');
+ nodes.c.last_probe.tcp_ips=['1.1.1.1'];
+ assert.equal(w.poolNodeForTest(g,nodes.c).qualified,false,'TCP overlap must still reject candidate');
+ state.groups.pop();nodes.c.last_probe=null;
  assert.equal(d.querySelector('[data-switch="1"]').textContent,'立即切换当前节点');
  assert.ok(d.querySelector('[data-switch="1"]').closest('.group-more'));
  assert.equal(d.querySelector('[data-switch="1"]').closest('.group-more').open,false);

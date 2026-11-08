@@ -274,7 +274,7 @@ class Management:
         from scheduler.policy import node_ref, source_for
         import hashlib
         settings=self.controller.state['settings']
-        config=hashlib.sha256(json.dumps([self.controller.history_epoch]+[settings[k] for k in ('tcp_check_urls','tcp_identity_urls','stun_servers','country_url')],sort_keys=True).encode()).hexdigest()[:16]
+        config=hashlib.sha256(json.dumps([self.controller.history_epoch,'tcp-us-independent-v1']+[settings[k] for k in ('tcp_check_urls','tcp_identity_urls','stun_servers','country_url')],sort_keys=True).encode()).hexdigest()[:16]
         refs=[node_ref(self.controller.state,n) for n in self.controller.state['nodes'].values()
               if not n['disabled'] and source_for(self.controller.state,n)['enabled']][:100]
         def read():

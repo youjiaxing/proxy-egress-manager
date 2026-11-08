@@ -175,12 +175,12 @@ async def test_changed_scope_without_current_node_checks_immediately_despite_bac
 @pytest.mark.asyncio
 async def test_switch_failed_verification_has_persistent_explicit_outcome(controller):
     c=controller;g=c.group('1');g['node']=None
-    c.prober.results['c']=Observation(True,True,{'9.9.9.9'},{'9.9.9.9'},{'9.9.9.9':'US'},identity_complete=False,identity_errors=['stun.test:3478'],reason='部分出口验证目标未返回有效结果：stun.test:3478')
+    c.prober.results['c']=Observation(True,True,{'9.9.9.9'},{'9.9.9.9'},{'9.9.9.9':'US'},identity_complete=False,identity_errors=['https://identity.test/'],reason='部分出口验证目标未返回有效结果：https://identity.test/')
     result=await c.action('group_switch',{'group':'1','node':'c'})
     assert g['node'] is None
     assert result['outcome']=='not_applied'
     assert result['selection']['requested']=='c'
-    assert result['selection']['attempts'][0]['identity_errors']==['stun.test:3478']
+    assert result['selection']['attempts'][0]['identity_errors']==['https://identity.test/']
     saved=json.loads(c.store.db.execute('select body from state where id=1').fetchone()[0])
     assert saved['groups'][0]['last_action']['outcome']=='not_applied'
     assert c.public()['groups'][0]['selection_progress'] is None

@@ -104,20 +104,33 @@ class Observation:
     samples: list = field(default_factory=list)
     country_errors: dict = field(default_factory=dict)
     identity_errors: list = field(default_factory=list)
+    udp_identity_complete: bool = True
 
     @property
     def complete(self):
-        return bool(self.identity_complete and self.tcp_ok and self.udp_ok and self.tcp_ips and self.udp_ips and
-                    all(ip in self.countries for ip in self.tcp_ips | self.udp_ips))
+        # Only TCP grants or renews a business lease. UDP is optional telemetry.
+        return bool(self.identity_complete and self.tcp_ok and self.tcp_ips and
+                    all(ip in self.countries for ip in self.tcp_ips))
 
     @property
     def us(self):
-        return self.complete and all(self.countries[ip] == "US" for ip in self.tcp_ips | self.udp_ips)
+        return self.complete and all(self.countries[ip] == "US" for ip in self.tcp_ips)
+
+    @property
+    def udp_reason(self):
+        if not self.udp_ok:
+            return "UDP 未测通或测量超时；不影响 TCP 使用"
+        if not self.udp_identity_complete or any(ip not in self.countries for ip in self.udp_ips):
+            return "UDP 已响应，出口信息不完整；仅供参考"
+        if any(self.countries[ip] != "US" for ip in self.udp_ips):
+            return "UDP 观测到非美国出口；仅供参考"
+        return "UDP 出口已观测；仅供参考，不参与准入或冲突判断"
 
     def public(self):
         return {"tcp_ok": self.tcp_ok, "udp_ok": self.udp_ok, "tcp_ips": sorted(self.tcp_ips),
                 "udp_ips": sorted(self.udp_ips), "countries": self.countries,
                 "complete": self.complete, "us": self.us, "reason": self.reason, "country_errors": self.country_errors, "identity_errors": self.identity_errors,
+                "udp_reason": self.udp_reason, "admission_policy": "tcp-us-independent-v1",
                 "coverage": "仅配置的 HTTPS/STUN 目标所见出口；其他目的地和地址族未知", "samples": self.samples}
 
 
@@ -160,8 +173,11 @@ class Prober:
         return code, error
 
     async def observe(self, upstream, settings):
+        started = time.monotonic()
+        budget = max(1, min(45, settings['health_grace'] * 0.75))
         timeout = settings["probe_timeout"]
-        result = Observation()
+        result = Observation(udp_identity_complete=False)
+        tcp_errors = []
         connector = ProxyConnector.from_url("socks5://%s:%s" % upstream, rdns=True)
         async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=timeout)) as proxy:
             async def tcp_check(url):
@@ -187,13 +203,16 @@ class Prober:
                 except Exception:
                     pass
                 target = urlsplit(url)
-                result.identity_errors.append(target.scheme+'://'+target.netloc+target.path)
+                failed = target.scheme+'://'+target.netloc+target.path
+                tcp_errors.append(failed)
+                result.identity_errors.append(failed)
                 return None
             async def udp_identity(server):
                 start = time.monotonic()
                 value = None
                 try:
                     value = await asyncio.wait_for(stun_query(server, timeout, upstream), timeout + 1)
+                    result.udp_ips.add(value)
                     return value
                 except Exception:
                     return None
@@ -201,26 +220,17 @@ class Prober:
                     if value is None:
                         result.identity_errors.append(server)
                     result.samples.append({"target":server,"method":"stun-with-retry","ok":bool(value),"ms":round((time.monotonic()-start)*1000,2) if value else None})
-            checks, tcp_ips, udp_ips = await asyncio.gather(
+            checks, tcp_ips = await asyncio.gather(
                 asyncio.gather(*(tcp_check(u) for u in settings["tcp_check_urls"])),
-                asyncio.gather(*(tcp_identity(u) for u in settings["tcp_identity_urls"])),
-                asyncio.gather(*(udp_identity(u) for u in settings["stun_servers"])))
-            result.identity_complete = all(tcp_ips) and all(udp_ips)
+                asyncio.gather(*(tcp_identity(u) for u in settings["tcp_identity_urls"])))
+            result.identity_complete = all(tcp_ips)
             result.tcp_ips = {ip for ip in tcp_ips if ip}
-            result.udp_ips = {ip for ip in udp_ips if ip}
             result.tcp_ok = any(checks) or bool(result.tcp_ips)
-            result.udp_ok = bool(result.udp_ips)
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as direct:
             async def tcp_control(url):
                 try:
                     async with direct.get(url, allow_redirects=False) as response:
                         return 200 <= response.status < 400
-                except Exception:
-                    return False
-            async def udp_control(server):
-                try:
-                    await asyncio.wait_for(stun_query(server, timeout), timeout + 1)
-                    return True
                 except Exception:
                     return False
             async def country(ip):
@@ -238,19 +248,30 @@ class Prober:
             controls = []
             if not result.tcp_ok:
                 controls.extend(tcp_control(u) for u in settings["tcp_check_urls"])
-            if not result.udp_ok:
-                controls.extend(udp_control(u) for u in settings["stun_servers"])
             outcomes, _ = await asyncio.gather(asyncio.gather(*controls),
-                asyncio.gather(*(country(ip) for ip in result.tcp_ips | result.udp_ips)))
+                asyncio.gather(*(country(ip) for ip in result.tcp_ips)))
             result.failure_confirmed = any(outcomes)
+            # Optional measurements cannot exhaust the controller's outer budget and
+            # discard a completed TCP identity. TCP metadata gets priority, including
+            # when the public country service rate-limits requests.
+            remaining = budget - (time.monotonic() - started) - 0.25
+            if remaining > 0:
+                try:
+                    async with asyncio.timeout(remaining):
+                        udp_ips = await asyncio.gather(*(udp_identity(u) for u in settings['stun_servers']))
+                        result.udp_identity_complete = all(udp_ips)
+                        await asyncio.gather(*(country(ip) for ip in result.udp_ips - result.tcp_ips))
+                except TimeoutError:
+                    pass
+            result.udp_ok = bool(result.udp_ips)
         if result.complete:
-            result.reason = "双协议出口已验证" if result.us else "观测到非美国出口"
-        elif result.country_errors and result.identity_complete and result.tcp_ok and result.udp_ok:
-            result.reason = "；".join(sorted(set(result.country_errors.values()))) + "；TCP/UDP 连通不代表出口验证通过"
-        elif result.identity_errors and result.tcp_ok and result.udp_ok:
-            result.reason = "部分出口验证目标未返回有效结果：" + "、".join(sorted(result.identity_errors))
+            result.reason = "TCP 美国出口已验证" if result.us else "观测到非美国 TCP 出口"
+        elif any(ip in result.country_errors for ip in result.tcp_ips) and result.identity_complete and result.tcp_ok:
+            result.reason = "；".join(sorted({result.country_errors[ip] for ip in result.tcp_ips if ip in result.country_errors})) + "；TCP 连通不代表出口验证通过"
+        elif not result.identity_complete and result.tcp_ok:
+            result.reason = "部分出口验证目标未返回有效结果：" + "、".join(sorted(tcp_errors))
         elif result.failure_confirmed:
-            result.reason = "必需协议持续连通故障（独立对照目标可达）"
+            result.reason = "TCP 连通故障（独立对照目标可达）"
         else:
             result.reason = "出口身份不完整或探测目标不可用；不据此盲切"
         return result

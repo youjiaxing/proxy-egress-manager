@@ -62,6 +62,49 @@ def controller(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('udp_ips,udp_country', [(set(), None), ({'1.1.1.1'}, 'US'), ({'4.2.2.2'}, 'DE')])
+async def test_udp_observations_never_revoke_tcp_lease(controller, udp_ips, udp_country):
+    c = controller
+    await c.tick()
+    generation = c.gateway.leases['1'].generation
+    since = c.group('1')['since']
+    countries = {'8.8.8.8': 'US', **{ip: udp_country for ip in udp_ips}}
+    c.prober.results['a'] = Observation(True, bool(udp_ips), {'8.8.8.8'}, udp_ips, countries)
+    c.group('1')['failure_since'] = c.clock() - 500
+    await c.tick()
+    assert c.group('1')['node'] == 'a' and c.group('1')['status'] == 'active'
+    assert c.gateway.allowed('1', generation)
+    assert c.gateway.leases['1'].generation == generation
+    assert c.group('1')['since'] == since
+    assert c.group('1')['failure_since'] is None
+    assert c.group('1')['udp_ips'] == sorted(udp_ips)
+
+
+@pytest.mark.asyncio
+async def test_manual_switch_accepts_tcp_only_and_ignores_other_udp_occupation(controller):
+    c = controller
+    await c.tick()
+    c.group('2')['udp_ips'] = ['9.9.9.9']
+    c.prober.results['c'] = Observation(True, False, {'9.9.9.9'}, set(), {'9.9.9.9': 'US'})
+    result = await c.action('group_switch', {'group': '1', 'node': 'c'})
+    assert result['outcome'] == 'applied'
+    assert result['selection']['attempts'][0]['eligible']
+    assert c.group('1')['node'] == 'c' and c.group('1')['status'] == 'active'
+    assert c.group('2')['status'] == 'active'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('ip,country', [('1.1.1.1', 'US'), ('9.9.9.9', 'DE')])
+async def test_tcp_conflict_or_foreign_exit_still_rejects_candidate(controller, ip, country):
+    c = controller
+    await c.tick()
+    c.prober.results['c'] = Observation(True, False, {ip}, set(), {ip: country})
+    result = await c.action('group_switch', {'group': '1', 'node': 'c'})
+    assert result['outcome'] == 'not_applied'
+    assert c.group('1')['node'] == 'a'
+
+
+@pytest.mark.asyncio
 async def test_stable_does_not_change_and_third_source_does_not_switch(controller):
     c = controller
     await c.tick()

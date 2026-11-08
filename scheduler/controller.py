@@ -43,7 +43,7 @@ class Controller:
         return next(g for g in self.state["groups"] if g["id"] == str(identity))
 
     def occupied(self, exclude=None):
-        return set().union(*(set(g["tcp_ips"]) | set(g["udp_ips"]) for g in self.state["groups"] if g["id"] != exclude)) if any(g["id"] != exclude for g in self.state["groups"]) else set()
+        return set().union(*(set(g["tcp_ips"]) for g in self.state["groups"] if g["id"] != exclude)) if any(g["id"] != exclude for g in self.state["groups"]) else set()
 
     def event(self, kind, message, group=None):
         self.store.event(kind, message, group)
@@ -77,7 +77,7 @@ class Controller:
             obj = self.state['nodes'].get(node)
             ref = node_ref(self.state, obj) if obj else None
             settings = self.state['settings']
-            config = hashlib.sha256(json.dumps([self.history_epoch]+[settings[k] for k in ('tcp_check_urls','tcp_identity_urls','stun_servers','country_url')],sort_keys=True).encode()).hexdigest()[:16]
+            config = hashlib.sha256(json.dumps([self.history_epoch,'tcp-us-independent-v1']+[settings[k] for k in ('tcp_check_urls','tcp_identity_urls','stun_servers','country_url')],sort_keys=True).encode()).hexdigest()[:16]
             self.history.record(group['uid'], ref, origin, dict(data, node_ref=ref, config=config, segment=self.session_epoch))
 
     async def start(self):
@@ -158,10 +158,10 @@ class Controller:
             result = Observation(reason="探测总超时，身份未刷新")
         result.observed_at = observed_at
         if not candidate:
-            observed = result.tcp_ips | result.udp_ips
-            previous = set(group["tcp_ips"]) | set(group["udp_ips"])
+            observed = result.tcp_ips
+            previous = set(group["tcp_ips"])
             if (observed - previous or observed & self.occupied(group["id"]) or
-                    any(code != "US" for code in result.countries.values())):
+                    any(result.countries.get(ip, "US") != "US" for ip in result.tcp_ips)):
                 await self.pause(group, "观测出口变化/异常，清理会话并等待完整提交")
         data = result.public()
         data["time"] = self.wall()
@@ -171,18 +171,18 @@ class Controller:
         return result
 
     async def accept(self, group, node, observation, revalidate=False, cancel=None):
-        addresses = observation.tcp_ips | observation.udp_ips
+        addresses = observation.tcp_ips
         if not eligible(self.state, group, self.state["nodes"][node]) or not observation.us or addresses & self.occupied(group["id"]):
             return False
-        previous = set(group["tcp_ips"]) | set(group["udp_ips"])
-        changed = node != group["node"] or addresses != previous or set(group["tcp_ips"]) != observation.tcp_ips or set(group["udp_ips"]) != observation.udp_ips
+        previous = set(group["tcp_ips"])
+        changed = node != group["node"] or addresses != previous
         if changed:
             await self.pause(group, "出口/节点更新：清理旧会话后提交占用")
         upstream = await self.core.select(int(group["id"]), node)
         # Candidate mapping must itself be verified before receiving a business lease.
         if node != group["node"] or revalidate:
             verified = await self.observe(group, node)
-            if not verified.us or (verified.tcp_ips | verified.udp_ips) & self.occupied(group["id"]):
+            if not verified.us or verified.tcp_ips & self.occupied(group["id"]):
                 return False
             observation = verified
         if cancel is not None and cancel.is_set():
@@ -192,8 +192,8 @@ class Controller:
         if self.clock() >= deadline:
             await self.pause(group, "观测已超过身份有效期，等待下一次重验")
             return False
-        group.update(node=node, tcp_ips=sorted(observation.tcp_ips), udp_ips=sorted(observation.udp_ips),
-                     verified_at=self.wall() - (self.clock() - observed_at), status="active", reason="双协议美国出口已验证", failure_since=None, retry_step=0, next_retry_at=0)
+        group.update(node=node, tcp_ips=sorted(observation.tcp_ips), udp_ips=sorted(observation.udp_ips), udp_reason=observation.udp_reason,
+                     verified_at=self.wall() - (self.clock() - observed_at), status="active", reason="TCP 美国出口已验证", failure_since=None, retry_step=0, next_retry_at=0)
         if changed or group["since"] is None:
             group["since"] = self.wall()
         try:
@@ -233,11 +233,11 @@ class Controller:
             self.candidate_cursor[group["id"]] = self.candidate_cursor.get(group["id"], 0) + 1
             result = await self.observe(group, node["id"], candidate=True)
             last_failure = result.reason
-            if result.country_errors:
+            if any(ip in result.country_errors for ip in result.tcp_ips):
                 country_failures.append(result.reason)
-            if result.us and (result.tcp_ips | result.udp_ips) & self.occupied(group['id']):
+            if result.us and result.tcp_ips & self.occupied(group['id']):
                 last_failure = "出口与其他分组重复，不能作为独立出口"
-            if result.us and not (result.tcp_ips | result.udp_ips) & self.occupied(group["id"]):
+            if result.us and not result.tcp_ips & self.occupied(group["id"]):
                 if await self.accept(group, node["id"], result, revalidate=True):
                     return True
                 last_failure = (self.state['nodes'][node['id']].get('last_probe') or {}).get('reason', '业务入口复验未通过')
@@ -302,11 +302,11 @@ class Controller:
                 continue
             for b in groups[i+1:]:
                 br = observations.get(b["id"])
-                if br and (ar.tcp_ips | ar.udp_ips) & (br.tcp_ips | br.udp_ips):
-                    anew = ar.tcp_ips | ar.udp_ips
-                    bnew = br.tcp_ips | br.udp_ips
-                    aold = set(a["tcp_ips"]) | set(a["udp_ips"])
-                    bold = set(b["tcp_ips"]) | set(b["udp_ips"])
+                if br and ar.tcp_ips & br.tcp_ips:
+                    anew = ar.tcp_ips
+                    bnew = br.tcp_ips
+                    aold = set(a["tcp_ips"])
+                    bold = set(b["tcp_ips"])
                     overlap = anew & bnew
                     if overlap - aold and not overlap - bold:
                         collisions.add(a["id"])
@@ -322,8 +322,8 @@ class Controller:
             result = observations.get(group["id"])
             needs_backup = result is None or group["id"] in collisions
             if result:
-                known_bad = any(country != "US" for country in result.countries.values())
-                known_conflict = bool((result.tcp_ips | result.udp_ips) & self.occupied(group["id"]))
+                known_bad = any(result.countries.get(ip, "US") != "US" for ip in result.tcp_ips)
+                known_conflict = bool(result.tcp_ips & self.occupied(group["id"]))
                 if known_bad or known_conflict:
                     await self.pause(group, "已观测非美国出口" if known_bad else "已观测组间出口冲突")
                     needs_backup = True
@@ -331,10 +331,10 @@ class Controller:
                     if group["failure_since"] is None:
                         group["failure_since"] = self.clock()
                     needs_backup = needs_backup or self.clock() - group["failure_since"] >= self.state["settings"]["failure_seconds"]
-                elif result.tcp_ok and result.udp_ok:
+                elif result.tcp_ok:
                     group["failure_since"] = None
                 if result.complete:
-                    conflict = group["id"] in collisions or bool((result.tcp_ips | result.udp_ips) & self.occupied(group["id"]))
+                    conflict = group["id"] in collisions or bool(result.tcp_ips & self.occupied(group["id"]))
                     if not result.us or conflict:
                         await self.pause(group, "非美国出口" if not result.us else "组间出口冲突")
                         needs_backup = True
@@ -473,10 +473,10 @@ class Controller:
                     selection.update(current=node['name'],stage='正在验证',index=index+1)
                     if progress:progress(f"正在验证 {index+1}/{len(refs)}：{node['name']}；已检查 {selection['checked']} 个")
                     result = await self.observe(group,node_id,candidate=True)
-                    conflict = bool((result.tcp_ips|result.udp_ips)&self.occupied(group['id']))
+                    conflict = bool(result.tcp_ips&self.occupied(group['id']))
                     reason = '出口与其他分组重复，不能作为独立出口' if conflict else result.reason
                     attempt = {'node_ref':ref,'name':node['name'],'reason':reason,
-                               'tcp_ok':result.tcp_ok,'udp_ok':result.udp_ok,'identity_errors':result.identity_errors,
+                               'tcp_ok':result.tcp_ok,'udp_ok':result.udp_ok,'udp_reason':result.udp_reason,'identity_errors':result.identity_errors,
                                'country_errors':result.country_errors,'conflict':conflict,'applied':False,'eligible':result.us and not conflict,'time':self.wall(),
                                'http_ms':max((s['ms'] for s in result.samples if s['method']=='http-get-headers' and s['ok'] and s.get('ms') is not None),default=None),
                                'http_failed':sum(not s['ok'] for s in result.samples if s['method']=='http-get-headers'),
@@ -484,7 +484,7 @@ class Controller:
                     if evaluating and self.history:
                         try:
                             history=await asyncio.to_thread(self.history.query,'',24,ref)
-                            expected=hashlib.sha256(json.dumps([self.history_epoch]+[settings[k] for k in ('tcp_check_urls','tcp_identity_urls','stun_servers','country_url')],sort_keys=True).encode()).hexdigest()[:16]
+                            expected=hashlib.sha256(json.dumps([self.history_epoch,'tcp-us-independent-v1']+[settings[k] for k in ('tcp_check_urls','tcp_identity_urls','stun_servers','country_url')],sort_keys=True).encode()).hexdigest()[:16]
                             prior=[s for s in history['series'] if s['config']==expected and s['method']=='http-get-headers' and s['origin'] in ('running','candidate')]
                             prior.sort(key=lambda s:(s['origin']!='running',-(s['points'][-1]['time'] if s['points'] else 0)))
                             if prior:

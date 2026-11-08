@@ -60,6 +60,15 @@ def test_identity_requires_every_configured_target():
     assert not result.complete and not result.us
 
 
+def test_admission_requires_tcp_only_and_retains_udp_metadata():
+    from scheduler.probe import Observation
+    result = Observation(True, True, {'8.8.8.8'}, {'8.8.4.4'}, {'8.8.8.8': 'US', '8.8.4.4': 'DE'})
+    assert result.complete and result.us
+    assert result.public()['countries']['8.8.4.4'] == 'DE'
+    result.tcp_ok = False
+    assert not result.us
+
+
 def test_subscription_aliases_rejected():
     with pytest.raises(ValueError):
         parse_subscription('shared: &x {name: US, type: socks5, server: example.com, port: 1080}\nproxies: [*x]',1)

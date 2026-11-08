@@ -46,7 +46,7 @@ class UDPForward(asyncio.DatagramProtocol):
 
 
 @pytest.mark.asyncio
-async def test_real_tcp_and_udp_observations_are_separate_and_all_targets_required():
+async def test_real_tcp_and_udp_observations_are_separate_and_all_tcp_targets_required(monkeypatch):
     async def check(request): return web.Response(status=204)
     identity_value={'ip':'8.8.8.8'}
     async def identity(request): return web.json_response(identity_value)
@@ -104,6 +104,31 @@ async def test_real_tcp_and_udp_observations_are_separate_and_all_targets_requir
         assert result.tcp_ips=={'8.8.8.8'}
         assert result.udp_ips=={'8.8.4.4'}
         assert result.tcp_ok and result.udp_ok
+        # Optional UDP failure must neither fail TCP admission nor trigger failure controls.
+        from scheduler import probe
+        real_stun = probe.stun_query
+        async def no_udp(server, timeout, upstream=None):
+            assert upstream is not None, 'UDP must not participate in failure attribution'
+            raise TimeoutError('UDP unavailable')
+        monkeypatch.setattr(probe, 'stun_query', no_udp)
+        result = await Prober().observe(upstream, settings)
+        assert result.us and result.complete and result.tcp_ok and not result.udp_ok
+        assert not result.failure_confirmed
+        assert result.identity_errors == settings['stun_servers']
+        # A hung optional measurement must not erase a completed TCP identity.
+        async def hung_udp(*args):
+            await asyncio.Event().wait()
+        monkeypatch.setattr(probe, 'stun_query', hung_udp)
+        result = await asyncio.wait_for(Prober().observe(upstream, {**settings, 'health_grace': 1}), 1.5)
+        assert result.us and not result.udp_ok
+        monkeypatch.setattr(probe, 'stun_query', no_udp)
+        settings['tcp_identity_urls'].append(str(http.make_url('/missing')))
+        result = await Prober().observe(upstream, settings)
+        assert not result.us
+        assert settings['stun_servers'][0] in result.identity_errors
+        assert settings['stun_servers'][0] not in result.reason
+        settings['tcp_identity_urls'].pop()
+        monkeypatch.setattr(probe, 'stun_query', real_stun)
         # A required identity target fails; the other protocol cannot stand in for it.
         settings['tcp_identity_urls'].append(str(http.make_url('/missing')))
         result=await Prober().observe(upstream,settings)
